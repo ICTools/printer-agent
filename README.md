@@ -50,6 +50,33 @@ go build ./cmd/print-agent
 ./print-agent receipt-test --device /dev/usb/epson_tmt20iii
 ```
 
+## Testing without a printer
+
+You can exercise most of the code paths without hardware by writing to files and mocking `brother_ql`.
+
+- Receipt and drawer (writes ESC/POS bytes to files):
+
+```sh
+RECEIPT_PRINTER_DEVICE=/tmp/receipt.bin ./print-agent receipt-test --barcode TEST123
+./print-agent open-drawer --device /tmp/drawer.bin
+```
+
+- Labels/stickers (mock `brother_ql`, keep generated PNGs on failure):
+
+```sh
+export PATH="$(pwd)/scripts:$PATH"
+chmod +x scripts/mock_brother_ql.sh
+ln -sf scripts/mock_brother_ql.sh scripts/brother_ql
+./print-agent label "Livre" 12.90 9781234567890 --footer "Chapitre Neuf" || true
+./print-agent sticker-image ./scripts/sticker.png || true
+```
+
+- Or run the helper:
+
+```sh
+./scripts/run-local-tests.sh
+```
+
 ## Commands
 
 - Detect printers:
