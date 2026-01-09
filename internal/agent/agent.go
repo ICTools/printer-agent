@@ -14,27 +14,33 @@ import (
 
 // Config holds the agent configuration.
 type Config struct {
-	PollInterval    time.Duration
-	PingInterval    time.Duration
-	SyncInterval    time.Duration
-	MaxBackoff      time.Duration
-	InitialBackoff  time.Duration
-	BackoffFactor   float64
-	Verbose         bool
-	DryRun          bool // If true, jobs are logged but not executed
+	PollInterval         time.Duration
+	FallbackPollInterval time.Duration // Used when SSE is active (less frequent)
+	PingInterval         time.Duration
+	SyncInterval         time.Duration
+	MaxBackoff           time.Duration
+	InitialBackoff       time.Duration
+	BackoffFactor        float64
+	Verbose              bool
+	DryRun               bool // If true, jobs are logged but not executed
+	DisableSSE           bool // If true, always use polling instead of SSE
+	Insecure             bool // Skip TLS certificate verification
 }
 
 // DefaultConfig returns a default configuration.
 func DefaultConfig() Config {
 	return Config{
-		PollInterval:   2 * time.Second,  // Poll every 1-2s for jobs
-		PingInterval:   30 * time.Second, // Heartbeat every ~30s
-		SyncInterval:   10 * time.Second,
-		MaxBackoff:     60 * time.Second,
-		InitialBackoff: 1 * time.Second,
-		BackoffFactor:  2.0,
-		Verbose:        false,
-		DryRun:         false,
+		PollInterval:         2 * time.Second,  // Poll every 2s for jobs (when SSE not available)
+		FallbackPollInterval: 30 * time.Second, // Fallback poll when SSE is active
+		PingInterval:         30 * time.Second, // Heartbeat every ~30s
+		SyncInterval:         10 * time.Second,
+		MaxBackoff:           60 * time.Second,
+		InitialBackoff:       1 * time.Second,
+		BackoffFactor:        2.0,
+		Verbose:              false,
+		DryRun:               false,
+		DisableSSE:           false,
+		Insecure:             false,
 	}
 }
 
@@ -57,8 +63,11 @@ type Agent struct {
 	dispatcher    *dispatcher.Dispatcher
 	stats         Stats
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh    chan struct{}
+	wg        sync.WaitGroup
+	jobNotify chan struct{} // Signals when a new job is available (from SSE)
+	sseActive bool          // True when SSE is connected
+	sseMu     sync.RWMutex
 }
 
 // New creates a new agent.
@@ -69,6 +78,7 @@ func New(client *api.Client, reg *registry.Registry, config Config) *Agent {
 		registry:   reg,
 		dispatcher: dispatcher.NewDispatcher(reg),
 		stopCh:     make(chan struct{}),
+		jobNotify:  make(chan struct{}, 1), // Buffered to avoid blocking SSE loop
 	}
 }
 
@@ -82,7 +92,6 @@ func NewWithAuth(client *api.Client, auth *api.Authenticator, reg *registry.Regi
 // Start begins the polling loop. It blocks until Stop is called or context is canceled.
 func (a *Agent) Start(ctx context.Context) error {
 	a.logInfo("Agent starting...")
-	a.logInfo("Poll interval: %s", a.config.PollInterval)
 
 	// Authenticate if we have an authenticator
 	if a.authenticator != nil {
@@ -122,8 +131,21 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.syncPrinters(ctx)
 	}
 
+	// Start SSE loop if Mercure is available and not disabled
+	useSSE := false
+	if a.authenticator != nil && !a.config.DisableSSE && a.authenticator.HasMercure() {
+		a.logInfo("Mercure SSE available, starting event-driven mode")
+		a.wg.Add(1)
+		go a.sseLoop(ctx)
+		useSSE = true
+	} else if a.config.DisableSSE {
+		a.logInfo("SSE disabled by configuration, using polling")
+	} else {
+		a.logInfo("Mercure not available, using polling mode")
+	}
+
 	a.wg.Add(1)
-	go a.pollLoop(ctx)
+	go a.pollLoop(ctx, useSSE)
 
 	// Wait for stop signal or context cancellation
 	select {
@@ -159,11 +181,22 @@ func (a *Agent) GetStats() Stats {
 }
 
 // pollLoop is the main polling loop.
-func (a *Agent) pollLoop(ctx context.Context) {
+// If useSSE is true, it uses a longer interval and also listens for job notifications.
+func (a *Agent) pollLoop(ctx context.Context, useSSE bool) {
 	defer a.wg.Done()
 
 	currentBackoff := a.config.InitialBackoff
-	ticker := time.NewTicker(a.config.PollInterval)
+
+	// Use longer interval when SSE is active (fallback safety net)
+	interval := a.config.PollInterval
+	if useSSE {
+		interval = a.config.FallbackPollInterval
+		a.logInfo("Poll interval: %s (fallback, SSE is primary)", interval)
+	} else {
+		a.logInfo("Poll interval: %s", interval)
+	}
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// Initial poll
@@ -175,10 +208,78 @@ func (a *Agent) pollLoop(ctx context.Context) {
 			return
 		case <-a.stopCh:
 			return
+		case <-a.jobNotify:
+			// SSE notified us of a new job, fetch immediately
+			a.logVerbose("SSE notification received, fetching job")
+			a.poll(ctx, &currentBackoff)
 		case <-ticker.C:
 			a.poll(ctx, &currentBackoff)
 		}
 	}
+}
+
+// sseLoop connects to Mercure and listens for job events.
+func (a *Agent) sseLoop(ctx context.Context) {
+	defer a.wg.Done()
+
+	mercureInfo := a.authenticator.GetMercureInfo()
+
+	client := api.NewMercureClient(mercureInfo.URL, mercureInfo.Token, mercureInfo.Topic, a.config.Insecure)
+	events := make(chan api.MercureEvent, 10)
+
+	// Handle connection state changes
+	onConnect := func() {
+		a.logVerbose("SSE connecting to Mercure hub...")
+	}
+
+	onDisconnect := func(err error) {
+		a.sseMu.Lock()
+		a.sseActive = false
+		a.sseMu.Unlock()
+		if err != nil {
+			a.logError("SSE disconnected: %v", err)
+		} else {
+			a.logInfo("SSE disconnected")
+		}
+	}
+
+	// Start subscription in background
+	go client.SubscribeWithReconnect(ctx, events, onConnect, onDisconnect)
+
+	// Process events
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case event := <-events:
+			// Mark SSE as active on first event
+			a.sseMu.Lock()
+			if !a.sseActive {
+				a.sseActive = true
+				a.logInfo("SSE connected to Mercure hub")
+			}
+			a.sseMu.Unlock()
+
+			a.logInfo("SSE event: %s (job=%s, type=%s, printer=%s)",
+				event.Type, event.JobID, event.JobType, event.PrinterCode)
+
+			// Notify poll loop that a job is available
+			select {
+			case a.jobNotify <- struct{}{}:
+			default:
+				// Channel full, poll loop will pick it up
+			}
+		}
+	}
+}
+
+// IsSSEActive returns true if SSE is currently connected.
+func (a *Agent) IsSSEActive() bool {
+	a.sseMu.RLock()
+	defer a.sseMu.RUnlock()
+	return a.sseActive
 }
 
 // pingLoop sends periodic pings to the server.

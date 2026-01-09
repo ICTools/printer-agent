@@ -267,6 +267,7 @@ func cmdRun(args []string) {
 	verbose := fs.Bool("verbose", false, "Enable verbose logging")
 	dryRun := fs.Bool("dry-run", false, "Log jobs without executing (for testing)")
 	insecure := fs.Bool("insecure", false, "Skip TLS certificate verification")
+	disableSSE := fs.Bool("disable-sse", false, "Disable Mercure SSE, use polling only")
 
 	_ = fs.Parse(args)
 
@@ -315,6 +316,8 @@ func cmdRun(args []string) {
 	config.SyncInterval = *syncInterval
 	config.Verbose = *verbose
 	config.DryRun = *dryRun
+	config.Insecure = *insecure
+	config.DisableSSE = *disableSSE
 
 	// Create and start agent with auth
 	a := agent.NewWithAuth(client, auth, reg, config)

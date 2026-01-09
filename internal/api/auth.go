@@ -22,11 +22,19 @@ type AuthConfig struct {
 
 // TokenResponse is the response from the authentication endpoint.
 type TokenResponse struct {
-	Token     string     `json:"token"`
-	ExpiresIn int        `json:"expires_in"`
-	ExpiresAt int64      `json:"expires_at"`
-	Type      string     `json:"type"`
-	Agent     AgentInfo  `json:"agent"`
+	Token     string       `json:"token"`
+	ExpiresIn int          `json:"expires_in"`
+	ExpiresAt int64        `json:"expires_at"`
+	Type      string       `json:"type"`
+	Agent     AgentInfo    `json:"agent"`
+	Mercure   *MercureInfo `json:"mercure,omitempty"`
+}
+
+// MercureInfo contains Mercure SSE configuration.
+type MercureInfo struct {
+	Token string `json:"token"`
+	URL   string `json:"url"`
+	Topic string `json:"topic"`
 }
 
 // AgentInfo contains information about the authenticated agent.
@@ -45,6 +53,7 @@ type Authenticator struct {
 	token        string
 	expiresAt    time.Time
 	agentInfo    *AgentInfo
+	mercureInfo  *MercureInfo
 }
 
 // NewAuthenticator creates a new authenticator.
@@ -95,11 +104,12 @@ func (a *Authenticator) Authenticate(ctx context.Context) (*TokenResponse, error
 		return nil, fmt.Errorf("decoding auth response: %w", err)
 	}
 
-	// Store token
+	// Store token and Mercure info
 	a.mu.Lock()
 	a.token = tokenResp.Token
 	a.expiresAt = time.Unix(tokenResp.ExpiresAt, 0)
 	a.agentInfo = &tokenResp.Agent
+	a.mercureInfo = tokenResp.Mercure
 	a.mu.Unlock()
 
 	return &tokenResp, nil
@@ -131,6 +141,21 @@ func (a *Authenticator) GetAgentInfo() *AgentInfo {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.agentInfo
+}
+
+// GetMercureInfo returns the Mercure SSE configuration.
+// Returns nil if Mercure is not configured on the server.
+func (a *Authenticator) GetMercureInfo() *MercureInfo {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.mercureInfo
+}
+
+// HasMercure returns true if Mercure SSE is available.
+func (a *Authenticator) HasMercure() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.mercureInfo != nil && a.mercureInfo.URL != "" && a.mercureInfo.Token != ""
 }
 
 // IsAuthenticated returns true if we have a valid token.

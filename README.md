@@ -63,6 +63,7 @@ L'agent se connecte à une API distante, récupère les jobs d'impression et les
 | `-verbose` | - | `false` | Logs détaillés |
 | `-dry-run` | - | `false` | Log jobs sans exécuter |
 | `-insecure` | - | `false` | Désactive vérification TLS |
+| `-disable-sse` | - | `false` | Force le mode polling (désactive Mercure SSE) |
 
 ### Test local (sans imprimante)
 
@@ -75,6 +76,95 @@ L'agent se connecte à une API distante, récupère les jobs d'impression et les
   -dry-run \
   -verbose
 ```
+
+---
+
+## Architecture
+
+L'agent supporte deux modes de récupération des jobs :
+
+### Mode Event-Driven (SSE/Mercure) - Recommandé
+
+Si le serveur supporte Mercure, l'agent utilise Server-Sent Events pour recevoir les notifications en temps réel.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              SERVEUR (Symfony + FrankenPHP)                 │
+│  ┌─────────────┐     ┌─────────────┐     ┌─────────────────────────────┐   │
+│  │   POS/App   │────▶│ PrintJob    │────▶│      Hub Mercure            │   │
+│  │             │     │ Service     │     │  (FrankenPHP intégré)       │   │
+│  └─────────────┘     └─────────────┘     └──────────────┬──────────────┘   │
+│        │                   │                            │                   │
+│        │              Crée job +                   SSE Push                 │
+│        │              Publie event             (notification)               │
+│        │                   │                            │                   │
+│        │                   ▼                            │                   │
+│        │             ┌─────────────┐                    │                   │
+│        │             │  Base de    │                    │                   │
+│        │             │  données    │                    │                   │
+│        │             └─────────────┘                    │                   │
+└────────│────────────────────▲───────────────────────────│───────────────────┘
+         │                    │                           │
+         │                    │ GET /jobs/next            │
+         │                    │ (fetch complet)           │
+         │                    │                           ▼
+┌────────│────────────────────│───────────────────────────────────────────────┐
+│        │                    │                     ┌─────────────┐           │
+│        │                    └─────────────────────│  SSE Loop   │◀──────────│
+│        │                                          │  (Mercure)  │           │
+│        │    ┌─────────────┐     ┌─────────────┐  └──────┬──────┘           │
+│        │    │  Dispatcher │◀────│  Poll Loop  │◀────────┘                  │
+│        │    │             │     │  (fallback) │    notification            │
+│        │    └──────┬──────┘     └─────────────┘                            │
+│        │           │                                                        │
+│        │           ▼                                                        │
+│        │    ┌─────────────┐                                                 │
+│        │    │ Imprimantes │                                                 │
+│        │    │ (USB/Réseau)│                                                 │
+│        │    └─────────────┘                                                 │
+│                           AGENT (Go)                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Flux :**
+
+1. Le POS crée une vente → `PrintJobService` crée un job en base
+2. `PrintJobService` publie une notification sur Mercure : `{event: "new_job", job_id, type, printer_code}`
+3. L'agent reçoit la notification via SSE (connexion persistante)
+4. L'agent fait immédiatement `GET /jobs/next` pour récupérer le job complet
+5. Le job est exécuté et acquitté via `POST /jobs/{id}/ack`
+
+**Sécurité :**
+
+- Chaque agent a un topic privé : `/printer-agent/{agent-id}/jobs`
+- Le JWT Mercure restreint l'accès au seul topic de l'agent
+- Seules les métadonnées transitent par SSE (pas de données sensibles)
+- Le payload complet est récupéré via HTTPS (API REST)
+
+### Mode Polling (fallback)
+
+Si Mercure n'est pas disponible ou désactivé (`--disable-sse`), l'agent poll l'API toutes les 2 secondes.
+
+```
+┌─────────────────┐                      ┌─────────────────┐
+│     SERVEUR     │                      │      AGENT      │
+│                 │  GET /jobs/next      │                 │
+│   ┌─────────┐   │◀─────────────────────│   ┌─────────┐   │
+│   │  Jobs   │   │       (2s)           │   │  Poll   │   │
+│   │  Queue  │   │─────────────────────▶│   │  Loop   │   │
+│   └─────────┘   │    job ou null       │   └─────────┘   │
+│                 │                      │                 │
+└─────────────────┘                      └─────────────────┘
+```
+
+### Comparaison
+
+| | Event-Driven (SSE) | Polling |
+|---|---|---|
+| Latence | ~instantané | 0-2s |
+| Charge serveur | Faible (1 connexion) | Élevée (requête/2s) |
+| Complexité | Mercure requis | Simple |
+| Fallback | Poll toutes les 30s | - |
 
 ---
 
@@ -98,9 +188,16 @@ Response:
     "id": "01KEHJ71KY45DBZZAFY67XJBC9",
     "name": "Poste 1",
     "store": "Magasin principal"
+  },
+  "mercure": {
+    "token": "eyJ...",
+    "url": "https://example.com/.well-known/mercure",
+    "topic": "/printer-agent/01KEHJ71KY45DBZZAFY67XJBC9/jobs"
   }
 }
 ```
+
+> `mercure` est optionnel. Présent uniquement si le serveur supporte Mercure SSE.
 
 ### Heartbeat
 
