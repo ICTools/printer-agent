@@ -176,6 +176,11 @@ func (d *Dispatcher) dispatchReceipt(job api.Job, printer *registry.PrinterInfo)
 		return fmt.Errorf("parsing receipt payload: %w", err)
 	}
 
+	// Check if this is a put_aside ticket
+	if payload.Type == "put_aside" {
+		return d.dispatchPutAside(job, printer)
+	}
+
 	// Convert API items to receipt items
 	items := make([]receipt.ReceiptItem, len(payload.Items))
 	for i, item := range payload.Items {
@@ -201,6 +206,27 @@ func (d *Dispatcher) dispatchReceipt(job api.Job, printer *registry.PrinterInfo)
 
 	p := receipt.NewPrinter(printer.DevicePath)
 	return p.PrintReceipt(r)
+}
+
+// dispatchPutAside prints a "put aside" ticket for reserved products.
+func (d *Dispatcher) dispatchPutAside(job api.Job, printer *registry.PrinterInfo) error {
+	payload, err := job.ParsePutAsidePayload()
+	if err != nil {
+		return fmt.Errorf("parsing put_aside payload: %w", err)
+	}
+
+	pa := receipt.PutAside{
+		CustomerName:   payload.CustomerName,
+		CustomerPhone:  payload.CustomerPhone,
+		ProductName:    payload.ProductName,
+		ProductBarcode: payload.ProductBarcode,
+		Quantity:       payload.Quantity,
+		OrderBarcode:   payload.OrderBarcode,
+		OrderDate:      payload.OrderDate,
+	}
+
+	p := receipt.NewPrinter(printer.DevicePath)
+	return p.PrintPutAsideTicket(pa)
 }
 
 // dispatchLabel prints a price label.

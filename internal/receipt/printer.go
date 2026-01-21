@@ -43,6 +43,17 @@ type ReceiptItem struct {
 	UnitPrice string
 }
 
+// PutAside represents a "mise de cote" (put aside) ticket for reserved products.
+type PutAside struct {
+	CustomerName   string
+	CustomerPhone  string // optional
+	ProductName    string
+	ProductBarcode string // optional
+	Quantity       int
+	OrderBarcode   string // e.g. CMD-2024-001234
+	OrderDate      string // e.g. 15/01/2024
+}
+
 func NewPrinter(device string) *Printer {
 	if device == "" {
 		if envDevice := os.Getenv("RECEIPT_PRINTER_DEVICE"); envDevice != "" {
@@ -299,6 +310,211 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 		return err
 	}
 
+	if err := sendRaw([]byte{0x1d, 'V', 1}); err != nil {
+		_ = sendRaw([]byte{0x1d, 'V', 0x41})
+	}
+
+	return nil
+}
+
+// PrintPutAsideTicket prints a "mise de cote" ticket for reserved products.
+func (p *Printer) PrintPutAsideTicket(pa PutAside) error {
+	f, err := os.OpenFile(p.Device, os.O_CREATE|os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = f.Sync()
+		_ = f.Close()
+	}()
+
+	sendLine := func(data string) error {
+		data = removeAccents(data)
+		if _, err := f.Write([]byte(data)); err != nil {
+			return err
+		}
+		time.Sleep(p.Delay + 10*time.Millisecond)
+		return nil
+	}
+	sendRaw := func(data []byte) error {
+		if _, err := f.Write(data); err != nil {
+			return err
+		}
+		time.Sleep(p.Delay + 10*time.Millisecond)
+		return nil
+	}
+	nl := "\r\n"
+	separator := strings.Repeat("=", 32)
+	thinSeparator := strings.Repeat("-", 32)
+
+	// Initialize printer
+	if err := sendRaw([]byte{0x1b, '@'}); err != nil {
+		return err
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Set character table
+	if err := sendRaw([]byte{0x1b, 't', 0x13}); err != nil {
+		return err
+	}
+
+	// === HEADER ===
+	// Center align
+	if err := sendRaw([]byte{0x1b, 'a', 1}); err != nil {
+		return err
+	}
+	// Bold on
+	if err := sendRaw([]byte{0x1b, 'E', 1}); err != nil {
+		return err
+	}
+	if err := sendLine(separator + nl); err != nil {
+		return err
+	}
+	if err := sendLine("** MISE DE COTE **" + nl); err != nil {
+		return err
+	}
+	if err := sendLine(separator + nl + nl); err != nil {
+		return err
+	}
+	// Bold off
+	if err := sendRaw([]byte{0x1b, 'E', 0}); err != nil {
+		return err
+	}
+
+	// === CUSTOMER INFO ===
+	// Left align
+	if err := sendRaw([]byte{0x1b, 'a', 0}); err != nil {
+		return err
+	}
+	// Bold on for customer name
+	if err := sendRaw([]byte{0x1b, 'E', 1}); err != nil {
+		return err
+	}
+	if err := sendLine("Client: " + pa.CustomerName + nl); err != nil {
+		return err
+	}
+	// Bold off
+	if err := sendRaw([]byte{0x1b, 'E', 0}); err != nil {
+		return err
+	}
+	// Phone (optional)
+	if pa.CustomerPhone != "" {
+		if err := sendLine("Tel: " + pa.CustomerPhone + nl); err != nil {
+			return err
+		}
+	}
+	if err := sendLine(nl); err != nil {
+		return err
+	}
+
+	// === PRODUCT INFO ===
+	if err := sendLine(thinSeparator + nl); err != nil {
+		return err
+	}
+	if err := sendLine("Produit:" + nl); err != nil {
+		return err
+	}
+	// Word wrap product name at ~30 chars
+	productName := pa.ProductName
+	for len(productName) > 0 {
+		lineLen := 30
+		if len(productName) <= lineLen {
+			if err := sendLine(productName + nl); err != nil {
+				return err
+			}
+			break
+		}
+		// Find last space before lineLen
+		cutPoint := lineLen
+		for i := lineLen; i > 0; i-- {
+			if productName[i] == ' ' {
+				cutPoint = i
+				break
+			}
+		}
+		if err := sendLine(productName[:cutPoint] + nl); err != nil {
+			return err
+		}
+		productName = strings.TrimLeft(productName[cutPoint:], " ")
+	}
+	if err := sendLine(nl); err != nil {
+		return err
+	}
+	if err := sendLine(fmt.Sprintf("Quantite: %d", pa.Quantity) + nl); err != nil {
+		return err
+	}
+	if err := sendLine(thinSeparator + nl + nl); err != nil {
+		return err
+	}
+
+	// === ORDER INFO ===
+	if err := sendLine("Commande du: " + pa.OrderDate + nl); err != nil {
+		return err
+	}
+	if err := sendLine("Ref: " + pa.OrderBarcode + nl + nl); err != nil {
+		return err
+	}
+
+	// === PRODUCT BARCODE (if provided) ===
+	if pa.ProductBarcode != "" {
+		// Center align for barcode
+		if err := sendRaw([]byte{0x1b, 'a', 1}); err != nil {
+			return err
+		}
+		// Set barcode height
+		if err := sendRaw([]byte{0x1d, 'h', 50}); err != nil {
+			return err
+		}
+		// Set barcode width
+		if err := sendRaw([]byte{0x1d, 'w', 2}); err != nil {
+			return err
+		}
+		// Print HRI below barcode
+		if err := sendRaw([]byte{0x1d, 'H', 2}); err != nil {
+			return err
+		}
+		// Print CODE128 barcode
+		if err := sendRaw([]byte{0x1d, 'k', 4}); err != nil {
+			return err
+		}
+		if err := sendRaw([]byte(pa.ProductBarcode)); err != nil {
+			return err
+		}
+		if err := sendRaw([]byte{0x00}); err != nil {
+			return err
+		}
+		if err := sendLine(nl + nl); err != nil {
+			return err
+		}
+	}
+
+	// === FOOTER ===
+	// Center align
+	if err := sendRaw([]byte{0x1b, 'a', 1}); err != nil {
+		return err
+	}
+	// Bold on
+	if err := sendRaw([]byte{0x1b, 'E', 1}); err != nil {
+		return err
+	}
+	if err := sendLine(separator + nl); err != nil {
+		return err
+	}
+	if err := sendLine("RESERVE - NE PAS VENDRE" + nl); err != nil {
+		return err
+	}
+	if err := sendLine(separator + nl); err != nil {
+		return err
+	}
+	// Bold off
+	if err := sendRaw([]byte{0x1b, 'E', 0}); err != nil {
+		return err
+	}
+	if err := sendLine(nl + nl + nl); err != nil {
+		return err
+	}
+
+	// Cut paper
 	if err := sendRaw([]byte{0x1d, 'V', 1}); err != nil {
 		_ = sendRaw([]byte{0x1d, 'V', 0x41})
 	}

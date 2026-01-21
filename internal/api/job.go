@@ -54,6 +54,7 @@ type FetchNextJobParams struct {
 
 // ReceiptPayload is the payload for a receipt print job.
 type ReceiptPayload struct {
+	Type          string        `json:"type,omitempty"` // "put_aside" for put-aside tickets
 	StoreAddress1 string        `json:"store_address_1,omitempty"`
 	StoreAddress2 string        `json:"store_address_2,omitempty"`
 	StorePhone    string        `json:"store_phone,omitempty"`
@@ -63,6 +64,19 @@ type ReceiptPayload struct {
 	Barcode       string        `json:"barcode,omitempty"`
 	Items         []ReceiptItem `json:"items"`
 	Payments      []string      `json:"payments,omitempty"`
+}
+
+// PutAsidePayload is the payload for a "put aside" ticket.
+type PutAsidePayload struct {
+	Type           string `json:"type"`                      // should be "put_aside"
+	CustomerName   string `json:"customer_name"`             // Client name
+	CustomerPhone  string `json:"customer_phone,omitempty"`  // Client phone (optional)
+	ProductName    string `json:"product_name"`              // Product description
+	ProductBarcode string `json:"product_barcode,omitempty"` // Product barcode (optional)
+	Quantity       int    `json:"quantity,omitempty"`        // Quantity (default 1)
+	OrderID        string `json:"order_id,omitempty"`        // Order ID
+	OrderBarcode   string `json:"order_barcode"`             // Order reference (e.g. CMD-2024-001234)
+	OrderDate      string `json:"order_date"`                // Order date (e.g. 15/01/2024)
 }
 
 // ReceiptItem is a line item on a receipt.
@@ -112,6 +126,19 @@ func (j *Job) ParseStickerImagePayload() (*StickerImagePayload, error) {
 	var p StickerImagePayload
 	if err := json.Unmarshal(j.Payload, &p); err != nil {
 		return nil, err
+	}
+	return &p, nil
+}
+
+// ParsePutAsidePayload parses the job payload as a PutAsidePayload.
+func (j *Job) ParsePutAsidePayload() (*PutAsidePayload, error) {
+	var p PutAsidePayload
+	if err := json.Unmarshal(j.Payload, &p); err != nil {
+		return nil, err
+	}
+	// Default quantity to 1 if not specified
+	if p.Quantity <= 0 {
+		p.Quantity = 1
 	}
 	return &p, nil
 }
