@@ -65,7 +65,7 @@ func NewPrinter(device string) *Printer {
 		}
 	}
 
-	printer := &Printer{Device: device, Delay: 100 * time.Millisecond}
+	printer := &Printer{Device: device, Delay: 0}
 	if logoPath := os.Getenv("RECEIPT_LOGO_PATH"); logoPath != "" {
 		printer.LogoPath = logoPath
 	}
@@ -133,7 +133,7 @@ func (p *Printer) OpenDrawer() error {
 }
 
 func (p *Printer) PrintReceipt(r Receipt) error {
-	f, err := os.OpenFile(p.Device, os.O_WRONLY|os.O_SYNC, 0)
+	f, err := os.OpenFile(p.Device, os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}
@@ -144,18 +144,12 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 
 	sendLine := func(data string) error {
 		data = removeAccents(data)
-		if _, err := f.Write([]byte(data)); err != nil {
-			return err
-		}
-		time.Sleep(p.Delay)
-		return nil
+		_, err := f.Write([]byte(data))
+		return err
 	}
 	sendRaw := func(data []byte) error {
-		if _, err := f.Write(data); err != nil {
-			return err
-		}
-		time.Sleep(p.Delay)
-		return nil
+		_, err := f.Write(data)
+		return err
 	}
 	nl := "\n"
 
@@ -335,7 +329,7 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 
 // PrintPutAsideTicket prints a "mise de cote" ticket for reserved products.
 func (p *Printer) PrintPutAsideTicket(pa PutAside) error {
-	f, err := os.OpenFile(p.Device, os.O_WRONLY|os.O_SYNC, 0)
+	f, err := os.OpenFile(p.Device, os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}
@@ -346,18 +340,12 @@ func (p *Printer) PrintPutAsideTicket(pa PutAside) error {
 
 	sendLine := func(data string) error {
 		data = removeAccents(data)
-		if _, err := f.Write([]byte(data)); err != nil {
-			return err
-		}
-		time.Sleep(p.Delay)
-		return nil
+		_, err := f.Write([]byte(data))
+		return err
 	}
 	sendRaw := func(data []byte) error {
-		if _, err := f.Write(data); err != nil {
-			return err
-		}
-		time.Sleep(p.Delay)
-		return nil
+		_, err := f.Write(data)
+		return err
 	}
 	nl := "\n"
 	separator := strings.Repeat("=", 32)
