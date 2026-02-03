@@ -65,7 +65,7 @@ func NewPrinter(device string) *Printer {
 		}
 	}
 
-	printer := &Printer{Device: device, Delay: 30 * time.Millisecond}
+	printer := &Printer{Device: device, Delay: 50 * time.Millisecond}
 	if logoPath := os.Getenv("RECEIPT_LOGO_PATH"); logoPath != "" {
 		printer.LogoPath = logoPath
 	}
@@ -303,24 +303,26 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 
 	// Print barcode if present
 	if r.Barcode != "" {
-		if err := sendRaw([]byte{0x1d, 'h', 80}); err != nil { // height (increased from 50 to 80)
+		time.Sleep(100 * time.Millisecond) // Extra delay before barcode
+		if err := sendRaw([]byte{0x1d, 'h', 100}); err != nil { // height
 			return err
 		}
-		if err := sendRaw([]byte{0x1d, 'w', 3}); err != nil { // width (increased from 2 to 3)
+		if err := sendRaw([]byte{0x1d, 'w', 3}); err != nil { // width
 			return err
 		}
-		if err := sendRaw([]byte{0x1d, 'H', 2}); err != nil { // HRI position: 2 = below barcode
+		if err := sendRaw([]byte{0x1d, 'H', 2}); err != nil { // HRI below
 			return err
 		}
-		if err := sendRaw([]byte{0x1d, 'f', 0}); err != nil { // font A for HRI
-			return err
-		}
-		if err := sendRaw([]byte{0x1d, 'k', 73, byte(len(r.Barcode))}); err != nil { // CODE128 with length
+		if err := sendRaw([]byte{0x1d, 'k', 4}); err != nil { // CODE128 type A
 			return err
 		}
 		if err := sendRaw([]byte(r.Barcode)); err != nil {
 			return err
 		}
+		if err := sendRaw([]byte{0x00}); err != nil { // null terminator
+			return err
+		}
+		time.Sleep(200 * time.Millisecond) // Wait for barcode to print
 	}
 	if err := sendLine(nl+nl+nl); err != nil {
 		return err
