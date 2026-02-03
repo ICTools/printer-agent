@@ -65,7 +65,7 @@ func NewPrinter(device string) *Printer {
 		}
 	}
 
-	printer := &Printer{Device: device, Delay: 50 * time.Millisecond}
+	printer := &Printer{Device: device, Delay: 100 * time.Millisecond}
 	if logoPath := os.Getenv("RECEIPT_LOGO_PATH"); logoPath != "" {
 		printer.LogoPath = logoPath
 	}
@@ -147,14 +147,14 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 		if _, err := f.Write([]byte(data)); err != nil {
 			return err
 		}
-		time.Sleep(p.Delay + 10*time.Millisecond)
+		time.Sleep(p.Delay)
 		return nil
 	}
 	sendRaw := func(data []byte) error {
 		if _, err := f.Write(data); err != nil {
 			return err
 		}
-		time.Sleep(p.Delay + 10*time.Millisecond)
+		time.Sleep(p.Delay)
 		return nil
 	}
 	nl := "\n"
@@ -349,14 +349,14 @@ func (p *Printer) PrintPutAsideTicket(pa PutAside) error {
 		if _, err := f.Write([]byte(data)); err != nil {
 			return err
 		}
-		time.Sleep(p.Delay + 10*time.Millisecond)
+		time.Sleep(p.Delay)
 		return nil
 	}
 	sendRaw := func(data []byte) error {
 		if _, err := f.Write(data); err != nil {
 			return err
 		}
-		time.Sleep(p.Delay + 10*time.Millisecond)
+		time.Sleep(p.Delay)
 		return nil
 	}
 	nl := "\n"
