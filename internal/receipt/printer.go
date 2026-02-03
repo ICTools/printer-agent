@@ -133,7 +133,7 @@ func (p *Printer) OpenDrawer() error {
 }
 
 func (p *Printer) PrintReceipt(r Receipt) error {
-	f, err := os.OpenFile(p.Device, os.O_CREATE|os.O_WRONLY, 0)
+	f, err := os.OpenFile(p.Device, os.O_WRONLY|os.O_SYNC, 0)
 	if err != nil {
 		return err
 	}
@@ -147,7 +147,6 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 		if _, err := f.Write([]byte(data)); err != nil {
 			return err
 		}
-		_ = f.Sync()
 		time.Sleep(p.Delay + 10*time.Millisecond)
 		return nil
 	}
@@ -155,7 +154,6 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 		if _, err := f.Write(data); err != nil {
 			return err
 		}
-		_ = f.Sync()
 		time.Sleep(p.Delay + 10*time.Millisecond)
 		return nil
 	}
@@ -337,7 +335,7 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 
 // PrintPutAsideTicket prints a "mise de cote" ticket for reserved products.
 func (p *Printer) PrintPutAsideTicket(pa PutAside) error {
-	f, err := os.OpenFile(p.Device, os.O_CREATE|os.O_WRONLY, 0)
+	f, err := os.OpenFile(p.Device, os.O_WRONLY|os.O_SYNC, 0)
 	if err != nil {
 		return err
 	}
@@ -351,7 +349,6 @@ func (p *Printer) PrintPutAsideTicket(pa PutAside) error {
 		if _, err := f.Write([]byte(data)); err != nil {
 			return err
 		}
-		_ = f.Sync()
 		time.Sleep(p.Delay + 10*time.Millisecond)
 		return nil
 	}
@@ -359,7 +356,6 @@ func (p *Printer) PrintPutAsideTicket(pa PutAside) error {
 		if _, err := f.Write(data); err != nil {
 			return err
 		}
-		_ = f.Sync()
 		time.Sleep(p.Delay + 10*time.Millisecond)
 		return nil
 	}
