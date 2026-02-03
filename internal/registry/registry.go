@@ -121,8 +121,28 @@ func (r *Registry) Detect() {
 		{"brother-label", "/dev/usb/brother_ql800"},
 	}
 
-	// Add dynamic devices
+	// Collect known device paths to avoid registering duplicates
+	knownPaths := make(map[string]bool)
+	for _, c := range receiptCandidates {
+		knownPaths[c.path] = true
+	}
+	for _, c := range labelCandidates {
+		knownPaths[c.path] = true
+	}
+
+	// Also resolve symlinks for known paths to catch aliases
+	for path := range knownPaths {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			knownPaths[resolved] = true
+		}
+	}
+
+	// Add dynamic devices, skipping any that resolve to a known device
 	for i, path := range globDevices("/dev/usb/lp*") {
+		resolved, _ := filepath.EvalSymlinks(path)
+		if knownPaths[path] || knownPaths[resolved] {
+			continue
+		}
 		receiptCandidates = append(receiptCandidates, struct {
 			id   string
 			path string
@@ -130,6 +150,10 @@ func (r *Registry) Detect() {
 	}
 
 	for i, path := range globDevices("/dev/lp*") {
+		resolved, _ := filepath.EvalSymlinks(path)
+		if knownPaths[path] || knownPaths[resolved] {
+			continue
+		}
 		receiptCandidates = append(receiptCandidates, struct {
 			id   string
 			path string
@@ -199,8 +223,28 @@ func (r *Registry) DetectChanges() PrinterChanges {
 		{"brother-label", "/dev/usb/brother_ql800"},
 	}
 
-	// Add dynamic devices
+	// Collect known device paths to avoid registering duplicates
+	knownPaths := make(map[string]bool)
+	for _, c := range receiptCandidates {
+		knownPaths[c.path] = true
+	}
+	for _, c := range labelCandidates {
+		knownPaths[c.path] = true
+	}
+
+	// Also resolve symlinks for known paths to catch aliases
+	for path := range knownPaths {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			knownPaths[resolved] = true
+		}
+	}
+
+	// Add dynamic devices, skipping any that resolve to a known device
 	for i, path := range globDevices("/dev/usb/lp*") {
+		resolved, _ := filepath.EvalSymlinks(path)
+		if knownPaths[path] || knownPaths[resolved] {
+			continue
+		}
 		receiptCandidates = append(receiptCandidates, struct {
 			id   string
 			path string
@@ -208,6 +252,10 @@ func (r *Registry) DetectChanges() PrinterChanges {
 	}
 
 	for i, path := range globDevices("/dev/lp*") {
+		resolved, _ := filepath.EvalSymlinks(path)
+		if knownPaths[path] || knownPaths[resolved] {
+			continue
+		}
 		receiptCandidates = append(receiptCandidates, struct {
 			id   string
 			path string
