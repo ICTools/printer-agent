@@ -65,7 +65,7 @@ func NewPrinter(device string) *Printer {
 		}
 	}
 
-	printer := &Printer{Device: device, Delay: 15 * time.Millisecond}
+	printer := &Printer{Device: device, Delay: 30 * time.Millisecond}
 	if logoPath := os.Getenv("RECEIPT_LOGO_PATH"); logoPath != "" {
 		printer.LogoPath = logoPath
 	}
@@ -168,7 +168,7 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 
 	if p.LogoPath != "" {
 		_ = printImageGraphicsMode(f, p.LogoPath)
-		_ = sendRaw([]byte{0x0A, 0x0A})
+		_ = sendRaw([]byte{0x0A})
 	}
 
 	if err := sendRaw([]byte{0x1b, 't', 0x13}); err != nil {
@@ -183,16 +183,27 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 	storePhone := getEnvOrDefault("STORE_PHONE", r.StorePhone)
 	storeVAT := getEnvOrDefault("STORE_VAT_NUMBER", r.StoreVAT)
 
-	if err := sendLine(storeAddress1+nl); err != nil {
-		return err
+	if storeAddress1 != "" {
+		if err := sendLine(storeAddress1+nl); err != nil {
+			return err
+		}
 	}
-	if err := sendLine(storeAddress2+nl); err != nil {
-		return err
+	if storeAddress2 != "" {
+		if err := sendLine(storeAddress2+nl); err != nil {
+			return err
+		}
 	}
-	if err := sendLine("Tel: "+storePhone+nl); err != nil {
-		return err
+	if storePhone != "" {
+		if err := sendLine("Tel: "+storePhone+nl); err != nil {
+			return err
+		}
 	}
-	if err := sendLine("TVA: "+storeVAT+nl+nl); err != nil {
+	if storeVAT != "" {
+		if err := sendLine("TVA: "+storeVAT+nl); err != nil {
+			return err
+		}
+	}
+	if err := sendLine(nl); err != nil {
 		return err
 	}
 
@@ -290,23 +301,26 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 		}
 	}
 
-	if err := sendRaw([]byte{0x1d, 'h', 50}); err != nil {
-		return err
-	}
-	if err := sendRaw([]byte{0x1d, 'w', 2}); err != nil {
-		return err
-	}
-	if err := sendRaw([]byte{0x1d, 'H', 2}); err != nil {
-		return err
-	}
-	if err := sendRaw([]byte{0x1d, 'k', 4}); err != nil {
-		return err
-	}
-	if err := sendRaw([]byte(r.Barcode)); err != nil {
-		return err
-	}
-	if err := sendRaw([]byte{0x00}); err != nil {
-		return err
+	// Print barcode if present
+	if r.Barcode != "" {
+		if err := sendRaw([]byte{0x1d, 'h', 80}); err != nil { // height (increased from 50 to 80)
+			return err
+		}
+		if err := sendRaw([]byte{0x1d, 'w', 3}); err != nil { // width (increased from 2 to 3)
+			return err
+		}
+		if err := sendRaw([]byte{0x1d, 'H', 2}); err != nil { // HRI position: 2 = below barcode
+			return err
+		}
+		if err := sendRaw([]byte{0x1d, 'f', 0}); err != nil { // font A for HRI
+			return err
+		}
+		if err := sendRaw([]byte{0x1d, 'k', 73, byte(len(r.Barcode))}); err != nil { // CODE128 with length
+			return err
+		}
+		if err := sendRaw([]byte(r.Barcode)); err != nil {
+			return err
+		}
 	}
 	if err := sendLine(nl+nl+nl); err != nil {
 		return err
