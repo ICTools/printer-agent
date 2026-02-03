@@ -157,7 +157,7 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 		time.Sleep(p.Delay + 10*time.Millisecond)
 		return nil
 	}
-	nl := "\r\n"
+	nl := "\n"
 
 	if err := sendRaw([]byte{0x1b, '@'}); err != nil {
 		return err
@@ -359,7 +359,7 @@ func (p *Printer) PrintPutAsideTicket(pa PutAside) error {
 		time.Sleep(p.Delay + 10*time.Millisecond)
 		return nil
 	}
-	nl := "\r\n"
+	nl := "\n"
 	separator := strings.Repeat("=", 32)
 	thinSeparator := strings.Repeat("-", 32)
 
