@@ -1,0 +1,2 @@
+python-escpos>=3.0
+pillow>=9.0
