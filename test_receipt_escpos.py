@@ -20,7 +20,7 @@ VENDOR_ID = 0x04b8   # Epson
 PRODUCT_ID = 0x0e28  # TM-T20III (peut varier, vérifier avec lsusb)
 
 # Alternative : utiliser un fichier device
-DEVICE_PATH = "/dev/usb/epson_tmt20iii"
+DEVICE_PATH = "/dev/usb/lp0"
 
 
 def print_test_receipt():
