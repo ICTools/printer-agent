@@ -151,6 +151,19 @@ func (a *Authenticator) GetMercureInfo() *MercureInfo {
 	return a.mercureInfo
 }
 
+// GetFreshMercureInfo returns the Mercure SSE configuration, refreshing the
+// auth token first if it is near expiry. This ensures the Mercure token is
+// always valid for new SSE connections.
+func (a *Authenticator) GetFreshMercureInfo(ctx context.Context) (*MercureInfo, error) {
+	// GetToken refreshes auth (and mercureInfo) if token expires in <5min
+	if _, err := a.GetToken(ctx); err != nil {
+		return nil, fmt.Errorf("refreshing token for mercure: %w", err)
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.mercureInfo, nil
+}
+
 // HasMercure returns true if Mercure SSE is available.
 func (a *Authenticator) HasMercure() bool {
 	a.mu.RLock()

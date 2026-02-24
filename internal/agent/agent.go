@@ -181,13 +181,14 @@ func (a *Agent) GetStats() Stats {
 }
 
 // pollLoop is the main polling loop.
-// If useSSE is true, it uses a longer interval and also listens for job notifications.
+// If useSSE is true, it adapts its interval dynamically: slow (30s) when SSE
+// is connected, fast (2s) when SSE is down.
 func (a *Agent) pollLoop(ctx context.Context, useSSE bool) {
 	defer a.wg.Done()
 
 	currentBackoff := a.config.InitialBackoff
 
-	// Use longer interval when SSE is active (fallback safety net)
+	// Determine initial interval
 	interval := a.config.PollInterval
 	if useSSE {
 		interval = a.config.FallbackPollInterval
@@ -199,10 +200,30 @@ func (a *Agent) pollLoop(ctx context.Context, useSSE bool) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	sseWasActive := useSSE
+
 	// Initial poll
 	a.poll(ctx, &currentBackoff)
 
 	for {
+		// If SSE mode is enabled, adapt polling interval to SSE state
+		if useSSE {
+			sseActive := a.IsSSEActive()
+			if sseWasActive && !sseActive {
+				// SSE went down, switch to fast polling
+				interval = a.config.PollInterval
+				ticker.Reset(interval)
+				a.logInfo("SSE down, poll interval increased to %s", interval)
+				sseWasActive = false
+			} else if !sseWasActive && sseActive {
+				// SSE came back, switch to slow fallback polling
+				interval = a.config.FallbackPollInterval
+				ticker.Reset(interval)
+				a.logInfo("SSE restored, poll interval reduced to %s", interval)
+				sseWasActive = true
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			return
@@ -219,60 +240,117 @@ func (a *Agent) pollLoop(ctx context.Context, useSSE bool) {
 }
 
 // sseLoop connects to Mercure and listens for job events.
+// It handles reconnection with fresh tokens to avoid 401 errors after token expiry.
 func (a *Agent) sseLoop(ctx context.Context) {
 	defer a.wg.Done()
 
-	mercureInfo := a.authenticator.GetMercureInfo()
-
-	client := api.NewMercureClient(mercureInfo.URL, mercureInfo.Token, mercureInfo.Topic, a.config.Insecure)
+	backoff := a.config.InitialBackoff
 	events := make(chan api.MercureEvent, 10)
 
-	// Handle connection state changes
-	onConnect := func() {
-		a.logVerbose("SSE connecting to Mercure hub...")
-	}
-
-	onDisconnect := func(err error) {
-		a.sseMu.Lock()
-		a.sseActive = false
-		a.sseMu.Unlock()
-		if err != nil {
-			a.logError("SSE disconnected: %v", err)
-		} else {
-			a.logInfo("SSE disconnected")
-		}
-	}
-
-	// Start subscription in background
-	go client.SubscribeWithReconnect(ctx, events, onConnect, onDisconnect)
-
-	// Process events
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-a.stopCh:
 			return
-		case event := <-events:
-			// Mark SSE as active on first event
-			a.sseMu.Lock()
-			if !a.sseActive {
-				a.sseActive = true
-				a.logInfo("SSE connected to Mercure hub")
-			}
-			a.sseMu.Unlock()
+		default:
+		}
 
-			a.logInfo("SSE event: %s (job=%s, type=%s, printer=%s)",
-				event.Type, event.JobID, event.JobType, event.PrinterCode)
-
-			// Notify poll loop that a job is available
+		// Get fresh Mercure info (refreshes auth token if near expiry)
+		mercureInfo, err := a.authenticator.GetFreshMercureInfo(ctx)
+		if err != nil {
+			a.logError("SSE failed to get Mercure token: %v", err)
 			select {
-			case a.jobNotify <- struct{}{}:
-			default:
-				// Channel full, poll loop will pick it up
+			case <-ctx.Done():
+				return
+			case <-a.stopCh:
+				return
+			case <-time.After(backoff):
+			}
+			backoff = a.sseNextBackoff(backoff)
+			continue
+		}
+
+		if mercureInfo == nil || mercureInfo.URL == "" || mercureInfo.Token == "" {
+			a.logError("SSE Mercure info no longer available, stopping SSE")
+			return
+		}
+
+		// Create a fresh client with the current token
+		client := api.NewMercureClient(mercureInfo.URL, mercureInfo.Token, mercureInfo.Topic, a.config.Insecure)
+
+		a.logVerbose("SSE connecting to Mercure hub...")
+
+		// Subscribe blocks until disconnection; signal via doneCh
+		doneCh := make(chan error, 1)
+		go func() {
+			doneCh <- client.Subscribe(ctx, events)
+		}()
+
+		// Process events until disconnection or stop
+		connected := false
+	eventLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-a.stopCh:
+				return
+			case err := <-doneCh:
+				if err != nil {
+					a.logError("SSE disconnected: %v", err)
+				} else {
+					a.logInfo("SSE disconnected")
+				}
+				break eventLoop
+			case event := <-events:
+				// Mark SSE as active on first event
+				if !connected {
+					connected = true
+					backoff = a.config.InitialBackoff // Reset backoff on successful connection
+					a.sseMu.Lock()
+					a.sseActive = true
+					a.sseMu.Unlock()
+					a.logInfo("SSE connected to Mercure hub")
+				}
+
+				a.logInfo("SSE event: %s (job=%s, type=%s, printer=%s)",
+					event.Type, event.JobID, event.JobType, event.PrinterCode)
+
+				// Notify poll loop that a job is available
+				select {
+				case a.jobNotify <- struct{}{}:
+				default:
+					// Channel full, poll loop will pick it up
+				}
 			}
 		}
+
+		// Disconnected
+		a.sseMu.Lock()
+		a.sseActive = false
+		a.sseMu.Unlock()
+		a.logInfo("SSE will reconnect with fresh token")
+
+		// Wait before reconnecting
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case <-time.After(backoff):
+		}
+		backoff = a.sseNextBackoff(backoff)
 	}
+}
+
+// sseNextBackoff calculates the next backoff duration for SSE reconnection.
+func (a *Agent) sseNextBackoff(current time.Duration) time.Duration {
+	next := time.Duration(float64(current) * a.config.BackoffFactor)
+	if next > a.config.MaxBackoff {
+		next = a.config.MaxBackoff
+	}
+	return next
 }
 
 // IsSSEActive returns true if SSE is currently connected.
