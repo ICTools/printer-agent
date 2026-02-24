@@ -25,22 +25,28 @@ type PrinterDevice struct {
 }
 
 type Receipt struct {
-	StoreAddress1 string
-	StoreAddress2 string
-	StorePhone    string
-	StoreVAT      string
-	StoreSocial   string
-	StoreWebsite  string
-	Items         []ReceiptItem
-	Payments      []string
-	Barcode       string
-	CreatedAt     time.Time
+	StoreAddress1  string
+	StoreAddress2  string
+	StorePhone     string
+	StoreVAT       string
+	StoreSocial    string
+	StoreWebsite   string
+	Items          []ReceiptItem
+	Payments       []string
+	Barcode        string
+	CreatedAt      time.Time
+	Subtotal       string
+	Total          string
+	DiscountLabel  string
+	DiscountAmount string
 }
 
 type ReceiptItem struct {
-	Name      string
-	Quantity  int
-	UnitPrice string
+	Name              string
+	Quantity          int
+	UnitPrice         string
+	DiscountPercent   string
+	OriginalUnitPrice string
 }
 
 // PutAside represents a "mise de cote" (put aside) ticket for reserved products.
@@ -242,8 +248,21 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 		line += fmt.Sprintf("%3d", it.Quantity)
 		line += spaces(col3 - len(line))
 		line += fmt.Sprintf("%6s", it.UnitPrice)
-		if err := sendLine(line+nl); err != nil {
+		if err := sendLine(line + nl); err != nil {
 			return err
+		}
+		// Display discount detail line if present
+		if it.DiscountPercent != "" && it.DiscountPercent != "0" {
+			origPrice := it.OriginalUnitPrice
+			if origPrice == "" {
+				origPrice = it.UnitPrice
+			}
+			detail := fmt.Sprintf("  %d x %s  -%s%%", it.Quantity, origPrice, it.DiscountPercent)
+			detail += spaces(48 - len(detail) - len(it.UnitPrice))
+			detail += it.UnitPrice
+			if err := sendLine(detail + nl); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -254,10 +273,35 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 	if err := sendRaw([]byte{0x1b, 'a', 2}); err != nil {
 		return err
 	}
+
+	// If discount info is present, show subtotal + discount + total
+	if r.DiscountLabel != "" && r.DiscountAmount != "" {
+		subtotal := r.Subtotal
+		if subtotal == "" {
+			subtotal = computeTotal(r.Items)
+		}
+		subLine := "Sous-total"
+		subLine += spaces(48 - len(subLine) - len(subtotal))
+		subLine += subtotal
+		if err := sendLine(subLine + nl); err != nil {
+			return err
+		}
+		discLine := r.DiscountLabel
+		discLine += spaces(48 - len(discLine) - len(r.DiscountAmount))
+		discLine += r.DiscountAmount
+		if err := sendLine(discLine + nl); err != nil {
+			return err
+		}
+	}
+
 	if err := sendRaw([]byte{0x1b, 'E', 1}); err != nil {
 		return err
 	}
-	if err := sendLine(fmt.Sprintf("TOTAL:      %s EUR%s", computeTotal(r.Items), nl)); err != nil {
+	total := r.Total
+	if total == "" {
+		total = computeTotal(r.Items)
+	}
+	if err := sendLine(fmt.Sprintf("TOTAL:      %s EUR%s", total, nl)); err != nil {
 		return err
 	}
 	if err := sendRaw([]byte{0x1b, 'E', 0}); err != nil {

@@ -185,23 +185,29 @@ func (d *Dispatcher) dispatchReceipt(job api.Job, printer *registry.PrinterInfo)
 	items := make([]receipt.ReceiptItem, len(payload.Items))
 	for i, item := range payload.Items {
 		items[i] = receipt.ReceiptItem{
-			Name:      item.Name,
-			Quantity:  item.Quantity,
-			UnitPrice: item.UnitPrice,
+			Name:              item.Name,
+			Quantity:          item.Quantity,
+			UnitPrice:         item.UnitPrice,
+			DiscountPercent:   item.DiscountPercent,
+			OriginalUnitPrice: item.OriginalUnitPrice,
 		}
 	}
 
 	r := receipt.Receipt{
-		StoreAddress1: payload.StoreAddress1,
-		StoreAddress2: payload.StoreAddress2,
-		StorePhone:    payload.StorePhone,
-		StoreVAT:      payload.StoreVAT,
-		StoreSocial:   payload.StoreSocial,
-		StoreWebsite:  payload.StoreWebsite,
-		Barcode:       payload.Barcode,
-		Items:         items,
-		Payments:      payload.Payments,
-		CreatedAt:     time.Now(),
+		StoreAddress1:  payload.StoreAddress1,
+		StoreAddress2:  payload.StoreAddress2,
+		StorePhone:     payload.StorePhone,
+		StoreVAT:       payload.StoreVAT,
+		StoreSocial:    payload.StoreSocial,
+		StoreWebsite:   payload.StoreWebsite,
+		Barcode:        payload.Barcode,
+		Items:          items,
+		Payments:       payload.Payments,
+		CreatedAt:      time.Now(),
+		Subtotal:       payload.Subtotal,
+		Total:          payload.Total,
+		DiscountLabel:  payload.DiscountLabel,
+		DiscountAmount: payload.DiscountAmount,
 	}
 
 	p := receipt.NewPrinter(printer.DevicePath)

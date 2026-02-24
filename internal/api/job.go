@@ -61,9 +61,13 @@ type ReceiptPayload struct {
 	StoreVAT      string        `json:"store_vat,omitempty"`
 	StoreSocial   string        `json:"store_social,omitempty"`
 	StoreWebsite  string        `json:"store_website,omitempty"`
-	Barcode       string        `json:"barcode,omitempty"`
-	Items         []ReceiptItem `json:"items"`
-	Payments      []string      `json:"payments,omitempty"`
+	Barcode        string        `json:"barcode,omitempty"`
+	Items          []ReceiptItem `json:"items"`
+	Payments       []string      `json:"payments,omitempty"`
+	Subtotal       string        `json:"subtotal,omitempty"`
+	Total          string        `json:"total,omitempty"`
+	DiscountLabel  string        `json:"discount_label,omitempty"`
+	DiscountAmount string        `json:"discount_amount,omitempty"`
 }
 
 // PutAsidePayload is the payload for a "put aside" ticket.
@@ -81,9 +85,11 @@ type PutAsidePayload struct {
 
 // ReceiptItem is a line item on a receipt.
 type ReceiptItem struct {
-	Name      string `json:"name"`
-	Quantity  int    `json:"quantity"`
-	UnitPrice string `json:"unit_price"`
+	Name              string `json:"name"`
+	Quantity          int    `json:"quantity"`
+	UnitPrice         string `json:"unit_price"`
+	DiscountPercent   string `json:"discount_percent,omitempty"`
+	OriginalUnitPrice string `json:"original_unit_price,omitempty"`
 }
 
 // LabelPayload is the payload for a label print job.
