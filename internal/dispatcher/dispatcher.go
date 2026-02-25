@@ -249,7 +249,7 @@ func (d *Dispatcher) dispatchLabel(job api.Job, printer *registry.PrinterInfo) e
 		Footer:    payload.Footer,
 	}
 
-	return label.PrintLabel(opts)
+	return label.PrintLabel(context.Background(), opts)
 }
 
 // dispatchStickerImage prints a sticker image.
@@ -304,7 +304,7 @@ func (d *Dispatcher) dispatchStickerImage(job api.Job, printer *registry.Printer
 		DevicePath: printer.DevicePath,
 	}
 
-	return label.PrintStickerImage(opts)
+	return label.PrintStickerImage(context.Background(), opts)
 }
 
 // downloadImage downloads an image from a URL and returns the path to the temp file.

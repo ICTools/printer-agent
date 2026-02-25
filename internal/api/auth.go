@@ -66,6 +66,7 @@ func NewAuthenticator(config AuthConfig) *Authenticator {
 	if config.Insecure {
 		httpClient.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			IdleConnTimeout: 90 * time.Second,
 		}
 	}
 

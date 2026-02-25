@@ -1,10 +1,12 @@
 package label
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
 type LabelOptions struct {
@@ -23,7 +25,7 @@ type StickerImageOptions struct {
 	DevicePath string
 }
 
-func PrintLabel(opts LabelOptions) error {
+func PrintLabel(ctx context.Context, opts LabelOptions) error {
 	pythonPath := opts.PythonPath
 	if pythonPath == "" {
 		pythonPath = getEnvOrDefault("PYTHON_PATH", "python3")
@@ -34,7 +36,11 @@ func PrintLabel(opts LabelOptions) error {
 		scriptPath = defaultScriptPath("print.py")
 	}
 
-	cmd := exec.Command(
+	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(
+		cmdCtx,
 		pythonPath,
 		scriptPath,
 		opts.Name,
@@ -50,7 +56,7 @@ func PrintLabel(opts LabelOptions) error {
 	return nil
 }
 
-func PrintStickerImage(opts StickerImageOptions) error {
+func PrintStickerImage(ctx context.Context, opts StickerImageOptions) error {
 	pythonPath := opts.PythonPath
 	if pythonPath == "" {
 		pythonPath = getEnvOrDefault("PYTHON_PATH", "python3")
@@ -61,12 +67,15 @@ func PrintStickerImage(opts StickerImageOptions) error {
 		scriptPath = defaultScriptPath("print_sticker.py")
 	}
 
+	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
 	args := []string{scriptPath, opts.ImagePath}
 	if opts.DevicePath != "" {
 		args = append(args, opts.DevicePath)
 	}
 
-	cmd := exec.Command(pythonPath, args...)
+	cmd := exec.CommandContext(cmdCtx, pythonPath, args...)
 	cmd.Dir = filepath.Dir(scriptPath)
 
 	if output, err := cmd.CombinedOutput(); err != nil {

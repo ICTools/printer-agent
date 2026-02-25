@@ -149,7 +149,7 @@ func cmdLabel(args []string) {
 		Footer:     *footer,
 	}
 
-	if err := label.PrintLabel(opts); err != nil {
+	if err := label.PrintLabel(context.Background(), opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Label error: %v\n", err)
 		os.Exit(1)
 	}
@@ -183,7 +183,7 @@ func cmdStickerAddress(args []string) {
 		Footer:     line3,
 	}
 
-	if err := label.PrintLabel(opts); err != nil {
+	if err := label.PrintLabel(context.Background(), opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Sticker address error: %v\n", err)
 		os.Exit(1)
 	}
@@ -209,7 +209,7 @@ func cmdStickerImage(args []string) {
 		DevicePath: *device,
 	}
 
-	if err := label.PrintStickerImage(opts); err != nil {
+	if err := label.PrintStickerImage(context.Background(), opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Sticker image error: %v\n", err)
 		os.Exit(1)
 	}

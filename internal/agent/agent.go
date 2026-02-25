@@ -246,6 +246,7 @@ func (a *Agent) sseLoop(ctx context.Context) {
 
 	backoff := a.config.InitialBackoff
 	events := make(chan api.MercureEvent, 10)
+	var prevClient *api.MercureClient
 
 	for {
 		select {
@@ -276,8 +277,14 @@ func (a *Agent) sseLoop(ctx context.Context) {
 			return
 		}
 
+		// Close previous client to release TCP connections and goroutines
+		if prevClient != nil {
+			prevClient.Close()
+		}
+
 		// Create a fresh client with the current token
 		client := api.NewMercureClient(mercureInfo.URL, mercureInfo.Token, mercureInfo.Topic, a.config.Insecure)
+		prevClient = client
 
 		a.logVerbose("SSE connecting to Mercure hub...")
 
@@ -416,6 +423,7 @@ func (a *Agent) syncLoop(ctx context.Context) {
 
 // checkAndSyncPrinters detects printer changes and syncs if needed.
 func (a *Agent) checkAndSyncPrinters(ctx context.Context) {
+	a.registry.RefreshAvailability()
 	changes := a.registry.DetectChanges()
 
 	if changes.Changed {
@@ -463,9 +471,6 @@ func (a *Agent) poll(ctx context.Context, currentBackoff *time.Duration) {
 	a.stats.mu.Lock()
 	a.stats.LastPollAt = time.Now()
 	a.stats.mu.Unlock()
-
-	// Refresh printer availability
-	a.registry.RefreshAvailability()
 
 	// Fetch next job
 	job, err := a.client.FetchNextJob(ctx, nil)

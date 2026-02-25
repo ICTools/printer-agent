@@ -29,6 +29,12 @@ type MercureClient struct {
 	httpClient *http.Client
 }
 
+// Close releases resources held by the MercureClient.
+// Must be called when the client is no longer needed to avoid leaking TCP connections.
+func (m *MercureClient) Close() {
+	m.httpClient.CloseIdleConnections()
+}
+
 // NewMercureClient creates a new Mercure SSE client.
 func NewMercureClient(hubURL, token, topic string, insecure bool) *MercureClient {
 	httpClient := &http.Client{
@@ -39,6 +45,7 @@ func NewMercureClient(hubURL, token, topic string, insecure bool) *MercureClient
 	if insecure {
 		httpClient.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			IdleConnTimeout: 90 * time.Second,
 		}
 	}
 
@@ -78,15 +85,23 @@ func (m *MercureClient) Subscribe(ctx context.Context, events chan<- MercureEven
 	if err != nil {
 		return fmt.Errorf("connecting to hub: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return fmt.Errorf("subscription failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
-	// Read SSE stream
-	return m.readStream(ctx, resp.Body, events)
+	// Close resp.Body when context is canceled to unblock scanner.Scan()
+	go func() {
+		<-ctx.Done()
+		resp.Body.Close()
+	}()
+
+	// Read SSE stream (body is closed by the goroutine above or at end of readStream)
+	err = m.readStream(ctx, resp.Body, events)
+	resp.Body.Close()
+	return err
 }
 
 // readStream parses the SSE stream and sends events to the channel.
