@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
 
 // PrinterType represents the type of printer.
@@ -357,7 +358,10 @@ func globDevices(pattern string) []string {
 }
 
 func isDeviceWritable(path string) bool {
-	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	// Use O_NONBLOCK to prevent blocking on sleeping/transitional USB devices.
+	// Without it, OpenFile can hang indefinitely if the device is in a weird state,
+	// which locks the registry mutex and freezes the entire agent.
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return false
 	}
