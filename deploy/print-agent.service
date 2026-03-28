@@ -1,0 +1,17 @@
+[Unit]
+Description=Print Agent — POS print job dispatcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/print-agent/env
+ExecStart=%h/Documents/printer-agent/print-agent run
+Restart=on-failure
+RestartSec=5
+# Stop gracefully (agent handles SIGTERM)
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target
