@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/print-agent/env
-ExecStart=%h/Documents/printer-agent/print-agent run
+ExecStart=%h/.local/bin/print-agent run
 Restart=on-failure
 RestartSec=5
 # Stop gracefully (agent handles SIGTERM)

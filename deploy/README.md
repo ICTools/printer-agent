@@ -8,17 +8,20 @@
 
 This script:
 1. Builds the `print-agent` binary
-2. Creates `~/.config/print-agent/env` from `.env.example` (if it doesn't exist)
-3. Installs the systemd user service
-4. Enables lingering (service starts at boot without login)
-5. Enables the service
+2. Installs the binary to `~/.local/bin/print-agent`
+3. Creates `~/.config/print-agent/env` from `.env.example` (if it doesn't exist)
+4. Installs the systemd user service
+5. Enables lingering (service starts at boot without login)
+6. Enables the service
 
 ## Manual install
 
-### 1. Build
+### 1. Build and install the binary
 
 ```bash
 go build -o print-agent ./cmd/print-agent
+mkdir -p ~/.local/bin
+install -m 0755 print-agent ~/.local/bin/print-agent
 ```
 
 ### 2. Configure environment
