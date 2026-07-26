@@ -6,6 +6,7 @@ Handles PIL/Pillow compatibility issues with brother_ql.
 
 import sys
 import os
+import argparse
 import subprocess
 from PIL import Image
 import tempfile
@@ -53,40 +54,46 @@ def prepare_image(image_path, width=696):
         print(f"Error preparing image: {e}", file=sys.stderr)
         return None
 
-def print_with_brother_ql(image_path, device='/dev/usb/brother_ql800'):
+def print_with_brother_ql(image_path, device='/dev/usb/brother_ql800', copies=1):
     """
     Print image using brother_ql command.
+    All copies are printed in a single brother_ql invocation: the printer
+    connection is opened once and closed once, avoiding N cold starts.
     """
+    if copies < 1:
+        copies = 1
+
     # First, prepare the image
     prepared_image = prepare_image(image_path)
     if not prepared_image:
         return False
-    
+
     try:
-        # Try to print with brother_ql
+        # Try to print with brother_ql.
+        # Passing the same image N times makes brother_ql print N copies
+        # within one session (single open/send/close on the device).
         cmd = [
             'brother_ql',
             '--backend', 'linux_kernel',
             '--model', 'QL-800',
             '--printer', device,
             'print', '-l', '62',
-            prepared_image
-        ]
-        
+        ] + [prepared_image] * copies
+
         result = subprocess.run(cmd, capture_output=True, text=True)
-        
+
         # Clean up temporary file
         if prepared_image != image_path:
             os.unlink(prepared_image)
-        
+
         # Check for success
         if result.returncode == 0 or 'Total:' in result.stdout:
-            print("Sticker printed successfully")
+            print(f"Sticker printed successfully ({copies} copie(s))")
             return True
         else:
             print(f"Print error: {result.stderr}", file=sys.stderr)
             return False
-            
+
     except Exception as e:
         print(f"Error executing brother_ql: {e}", file=sys.stderr)
         # Clean up temporary file
@@ -95,16 +102,17 @@ def print_with_brother_ql(image_path, device='/dev/usb/brother_ql800'):
         return False
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("Usage: python3 print_sticker.py <image_path> [device]", file=sys.stderr)
+    parser = argparse.ArgumentParser(description='Print a sticker image on a Brother QL printer.')
+    parser.add_argument('image_path', help='Path to the image to print')
+    parser.add_argument('device', nargs='?', default='/dev/usb/brother_ql800',
+                        help='Printer device path')
+    parser.add_argument('--copies', type=int, default=1,
+                        help='Number of copies to print (default 1)')
+    args = parser.parse_args()
+
+    if not os.path.exists(args.image_path):
+        print(f"Error: Image file not found: {args.image_path}", file=sys.stderr)
         sys.exit(1)
-    
-    image_path = sys.argv[1]
-    device = sys.argv[2] if len(sys.argv) > 2 else '/dev/usb/brother_ql800'
-    
-    if not os.path.exists(image_path):
-        print(f"Error: Image file not found: {image_path}", file=sys.stderr)
-        sys.exit(1)
-    
-    success = print_with_brother_ql(image_path, device)
+
+    success = print_with_brother_ql(args.image_path, args.device, args.copies)
     sys.exit(0 if success else 1)

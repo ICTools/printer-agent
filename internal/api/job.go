@@ -31,12 +31,23 @@ type Job struct {
 	Payload    json.RawMessage `json:"payload"`
 	RetryCount int             `json:"retry_count"`
 	Printer    JobPrinter      `json:"printer"`
+	Copies     int             `json:"copies"` // Number of copies to print (default 1 if absent/0)
 	CreatedAt  time.Time       `json:"created_at,omitempty"`
 }
 
 // PrinterCode returns the printer code for this job.
 func (j *Job) PrinterCode() string {
 	return j.Printer.Code
+}
+
+// NumCopies returns the number of copies to print for this job.
+// Older backends may omit the "copies" field or send 0; in both cases
+// a single copy is printed (a job is never printed 0 times).
+func (j *Job) NumCopies() int {
+	if j.Copies <= 0 {
+		return 1
+	}
+	return j.Copies
 }
 
 // NextJobResponse is the response from GET /jobs/next.

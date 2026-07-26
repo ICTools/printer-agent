@@ -302,8 +302,11 @@ func (d *Dispatcher) dispatchStickerImage(job api.Job, printer *registry.Printer
 	opts := label.StickerImageOptions{
 		ImagePath:  imagePath,
 		DevicePath: printer.DevicePath,
+		Copies:     job.NumCopies(),
 	}
 
+	// A single Python invocation prints all copies while keeping the printer
+	// connection open (no cold start per copy).
 	return label.PrintStickerImage(context.Background(), opts)
 }
 

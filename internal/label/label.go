@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type StickerImageOptions struct {
 	ScriptPath string
 	ImagePath  string
 	DevicePath string
+	Copies     int // Number of copies to print in a single run (default 1)
 }
 
 func PrintLabel(ctx context.Context, opts LabelOptions) error {
@@ -67,12 +69,22 @@ func PrintStickerImage(ctx context.Context, opts StickerImageOptions) error {
 		scriptPath = defaultScriptPath("print_sticker.py")
 	}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	copies := opts.Copies
+	if copies <= 0 {
+		copies = 1
+	}
+
+	// Scale the timeout with the number of copies: one Python process prints
+	// them all, so N copies take roughly N times as long as a single print.
+	cmdCtx, cancel := context.WithTimeout(ctx, 60*time.Second*time.Duration(copies))
 	defer cancel()
 
 	args := []string{scriptPath, opts.ImagePath}
 	if opts.DevicePath != "" {
 		args = append(args, opts.DevicePath)
+	}
+	if copies > 1 {
+		args = append(args, "--copies", strconv.Itoa(copies))
 	}
 
 	cmd := exec.CommandContext(cmdCtx, pythonPath, args...)
