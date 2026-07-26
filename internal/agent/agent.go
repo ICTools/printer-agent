@@ -31,7 +31,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		PollInterval:         2 * time.Second,  // Poll every 2s for jobs (when SSE not available)
-		FallbackPollInterval: 30 * time.Second, // Fallback poll when SSE is active
+		FallbackPollInterval: 5 * time.Second,  // Fallback poll when SSE is active
 		PingInterval:         30 * time.Second, // Heartbeat every ~30s
 		SyncInterval:         10 * time.Second,
 		MaxBackoff:           60 * time.Second,
@@ -181,8 +181,8 @@ func (a *Agent) GetStats() Stats {
 }
 
 // pollLoop is the main polling loop.
-// If useSSE is true, it adapts its interval dynamically: slow (30s) when SSE
-// is connected, fast (2s) when SSE is down.
+// If useSSE is true, it adapts its interval dynamically: slow (FallbackPollInterval)
+// when SSE is connected, fast (PollInterval) when SSE is down.
 func (a *Agent) pollLoop(ctx context.Context, useSSE bool) {
 	defer a.wg.Done()
 
@@ -510,11 +510,29 @@ func (a *Agent) poll(ctx context.Context, currentBackoff *time.Duration) {
 		return
 	}
 
-	a.processJob(ctx, job)
+	// Process the job, then keep draining the queue: after each successful
+	// dispatch, immediately fetch the next job instead of waiting for the
+	// next tick, so bursts of jobs are emptied quickly.
+	for job != nil {
+		if !a.processJob(ctx, job) {
+			return
+		}
+
+		a.stats.mu.Lock()
+		a.stats.LastPollAt = time.Now()
+		a.stats.mu.Unlock()
+
+		job, err = a.client.FetchNextJob(ctx, nil)
+		if err != nil {
+			a.logError("Failed to fetch job while draining queue: %v", err)
+			return
+		}
+	}
 }
 
 // processJob dispatches a single job and reports the result.
-func (a *Agent) processJob(ctx context.Context, job *api.Job) {
+// It returns true if the job was processed successfully.
+func (a *Agent) processJob(ctx context.Context, job *api.Job) bool {
 	a.logInfo("Processing job %s (type: %s, printer: %s, retry: %d)",
 		job.ID, job.Type, job.PrinterCode(), job.RetryCount)
 
@@ -539,7 +557,7 @@ func (a *Agent) processJob(ctx context.Context, job *api.Job) {
 		if ackErr := a.client.AckJob(ctx, job.ID, job.LeaseID, true, ""); ackErr != nil {
 			a.logError("Failed to acknowledge job: %v", ackErr)
 		}
-		return
+		return true
 	}
 
 	err := a.dispatcher.Dispatch(*job)
@@ -560,7 +578,7 @@ func (a *Agent) processJob(ctx context.Context, job *api.Job) {
 		if ackErr := a.client.AckJob(ctx, job.ID, job.LeaseID, false, err.Error()); ackErr != nil {
 			a.logError("Failed to ack job failure: %v", ackErr)
 		}
-		return
+		return false
 	}
 
 	a.logInfo("Job %s completed successfully", job.ID)
@@ -569,6 +587,7 @@ func (a *Agent) processJob(ctx context.Context, job *api.Job) {
 	if ackErr := a.client.AckJob(ctx, job.ID, job.LeaseID, true, ""); ackErr != nil {
 		a.logError("Failed to acknowledge job: %v", ackErr)
 	}
+	return true
 }
 
 // Logging helpers
