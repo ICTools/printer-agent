@@ -1,12 +1,16 @@
+# Managed by `printer setup`: this file is rewritten on every setup, edit
+# ~/.config/print-agent/env instead.
 [Unit]
 Description=Print Agent — POS print job dispatcher
 After=network-online.target
 Wants=network-online.target
+# Never give up retrying (network down at boot, API unreachable...).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/print-agent/env
-ExecStart=%h/.local/bin/print-agent run
+ExecStart=%h/.local/bin/printer run
 Restart=on-failure
 RestartSec=5
 # Stop gracefully (agent handles SIGTERM)

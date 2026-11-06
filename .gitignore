@@ -2,3 +2,7 @@ venv/
 .venv/
 __pycache__/
 *.pyc
+
+# Local builds
+/printer
+/dist/

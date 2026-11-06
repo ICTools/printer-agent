@@ -1,61 +1,117 @@
 #!/usr/bin/env bash
+# Install (or repair, or migrate) the print agent on a till PC, without Go:
+#
+#   curl -fsSL https://raw.githubusercontent.com/ICTools/printer-agent/main/deploy/install.sh | bash
+#
+# Options (after `bash -s --` when piped):
+#   --version vX.Y.Z   install that release instead of the latest
+#   --from-source      build from this checkout with Go (development)
+#
+# It downloads the binary of the GitHub release for this CPU, checks its sha256
+# against checksums.txt, then runs `printer setup`, which installs the binary
+# to ~/.local/bin/printer, the systemd user service, the config
+# ~/.config/print-agent/env (never overwritten) and enables start at boot.
+#
+# Private repository: export GITHUB_TOKEN=... (or log in with `gh auth login`).
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
-SERVICE_NAME="print-agent"
-CONFIG_DIR="${HOME}/.config/${SERVICE_NAME}"
-SYSTEMD_DIR="${HOME}/.config/systemd/user"
-BIN_DIR="${HOME}/.local/bin"
+REPO="${PRINTER_REPO:-ICTools/printer-agent}"
+VERSION="latest"
+FROM_SOURCE=0
 
-echo "=== print-agent installer ==="
-echo
+usage() { sed -n '2,15p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; }
 
-# 1. Build the binary
-echo "[1/6] Building print-agent..."
-cd "$REPO_DIR"
-go build -o print-agent ./cmd/print-agent
-echo "  Built: ${REPO_DIR}/print-agent"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version) VERSION="${2:?--version needs a tag, e.g. v1.0.0}"; shift 2 ;;
+        --from-source) FROM_SOURCE=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+done
 
-# 2. Install binary to ~/.local/bin
-echo "[2/6] Installing binary to ${BIN_DIR}..."
-mkdir -p "$BIN_DIR"
-install -m 0755 "${REPO_DIR}/print-agent" "${BIN_DIR}/${SERVICE_NAME}"
-echo "  Installed: ${BIN_DIR}/${SERVICE_NAME}"
-
-# 3. Create config directory and env file if missing
-echo "[3/6] Setting up config directory..."
-mkdir -p "$CONFIG_DIR"
-if [ ! -f "${CONFIG_DIR}/env" ]; then
-    cp "${REPO_DIR}/.env.example" "${CONFIG_DIR}/env"
-    echo "  Created: ${CONFIG_DIR}/env (from .env.example)"
-    echo "  >>> EDIT THIS FILE with your API credentials before starting the service <<<"
-else
-    echo "  Config already exists: ${CONFIG_DIR}/env (not overwritten)"
+if [ "$(id -u)" -eq 0 ]; then
+    echo "Run this as the till user, not root/sudo: the service is a systemd *user* service." >&2
+    exit 1
+fi
+if [ "$(uname -s)" != "Linux" ]; then
+    echo "Linux only." >&2
+    exit 1
 fi
 
-# 4. Install systemd unit
-echo "[4/6] Installing systemd service..."
-mkdir -p "$SYSTEMD_DIR"
-cp "${SCRIPT_DIR}/${SERVICE_NAME}.service" "${SYSTEMD_DIR}/${SERVICE_NAME}.service"
-systemctl --user daemon-reload
-echo "  Installed: ${SYSTEMD_DIR}/${SERVICE_NAME}.service"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 
-# 5. Enable lingering (start service at boot, even without login)
-echo "[5/6] Enabling lingering for user $(whoami)..."
-loginctl enable-linger "$(whoami)"
-echo "  Linger enabled"
+if [ "$FROM_SOURCE" -eq 1 ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REPO_DIR="$(dirname "$SCRIPT_DIR")"
+    if [ ! -f "$REPO_DIR/go.mod" ]; then
+        echo "--from-source must be run from a checkout: ./deploy/install.sh --from-source" >&2
+        exit 1
+    fi
+    command -v go >/dev/null || { echo "Go is required for --from-source." >&2; exit 1; }
+    BUILD_VERSION="$(git -C "$REPO_DIR" describe --tags --always --dirty 2>/dev/null || echo dev)"
+    echo "Building printer ${BUILD_VERSION} from ${REPO_DIR}..."
+    (cd "$REPO_DIR" && CGO_ENABLED=0 go build -trimpath \
+        -ldflags "-s -w -X main.version=${BUILD_VERSION}" -o "$TMP/printer" ./cmd/printer)
+    "$TMP/printer" setup
+    exit 0
+fi
 
-# 6. Enable (but don't start yet — user needs to configure env first)
-echo "[6/6] Enabling service..."
-systemctl --user enable "$SERVICE_NAME"
-echo "  Service enabled (will start at next boot)"
+case "$(uname -m)" in
+    x86_64|amd64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *) echo "Unsupported CPU: $(uname -m)" >&2; exit 1 ;;
+esac
+ASSET="printer_linux_${ARCH}"
 
-echo
-echo "=== Installation complete ==="
-echo
-echo "Next steps:"
-echo "  1. Edit your config:    nano ${CONFIG_DIR}/env"
-echo "  2. Start the service:   systemctl --user start ${SERVICE_NAME}"
-echo "  3. Check status:        systemctl --user status ${SERVICE_NAME}"
-echo "  4. View logs:           journalctl --user -u ${SERVICE_NAME} -f"
+if [ "$VERSION" = "latest" ]; then
+    BASE="https://github.com/${REPO}/releases/latest/download"
+else
+    BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+fi
+
+download_public() {
+    curl -fsSL --retry 3 -o "$TMP/$ASSET" "$BASE/$ASSET" &&
+        curl -fsSL --retry 3 -o "$TMP/checksums.txt" "$BASE/checksums.txt"
+}
+
+download_gh() {
+    command -v gh >/dev/null || return 1
+    local tag=()
+    if [ "$VERSION" != "latest" ]; then tag=("$VERSION"); fi
+    # gh uses GH_TOKEN / GITHUB_TOKEN when set, else its own login.
+    gh release download "${tag[@]}" -R "$REPO" -p "$ASSET" -p checksums.txt -D "$TMP" --clobber
+}
+
+echo "Downloading ${ASSET} (${VERSION}) from ${REPO}..."
+if ! download_public 2>/dev/null; then
+    echo "Public download failed, trying the gh CLI (private repository?)..."
+    if ! download_gh; then
+        cat >&2 <<EOF
+Download failed. Check that a release exists:
+  https://github.com/${REPO}/releases
+If the repository is private: install gh and run \`gh auth login\`,
+or export GITHUB_TOKEN=<token with read access to ${REPO}>, then retry.
+EOF
+        exit 1
+    fi
+fi
+
+echo "Verifying sha256..."
+if ! (cd "$TMP" && grep -E "^[0-9a-f]{64} [ *]${ASSET}\$" checksums.txt | sha256sum -c --strict -); then
+    echo "Checksum verification FAILED: nothing was installed." >&2
+    exit 1
+fi
+chmod 0755 "$TMP/$ASSET"
+
+"$TMP/$ASSET" setup
+
+cat <<EOF
+
+Done. Useful commands (open a new terminal if 'printer' is not found yet):
+  printer status         state of the service, config and printers
+  printer config edit    fill in the API credentials (restarts the service)
+  printer log            follow the logs
+  printer update         install the latest release
+EOF

@@ -1,12 +1,17 @@
 package label
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	printagent "print-agent"
 )
 
 type LabelOptions struct {
@@ -101,7 +106,62 @@ func defaultScriptPath(scriptName string) string {
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate
 	}
+	if extracted, err := extractEmbeddedScript(scriptName); err == nil {
+		return extracted
+	}
 	return scriptName
+}
+
+// extractEmbeddedScript writes the copy of the script built into the binary to
+// the user cache (one directory per content hash, so an updated binary never
+// runs a stale script) and returns its path. It lets a release binary print
+// labels without a checkout of the repository.
+func extractEmbeddedScript(scriptName string) (string, error) {
+	var content []byte
+	switch scriptName {
+	case "print.py":
+		content = printagent.LabelScript
+	case "print_sticker.py":
+		content = printagent.StickerScript
+	default:
+		return "", fmt.Errorf("no embedded script %q", scriptName)
+	}
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(content)
+	dir := filepath.Join(cacheDir, "print-agent", "scripts", hex.EncodeToString(sum[:])[:12])
+	return writeScriptOnce(dir, scriptName, content)
+}
+
+func writeScriptOnce(dir, scriptName string, content []byte) (string, error) {
+	target := filepath.Join(dir, scriptName)
+	if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, content) {
+		return target, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, "."+scriptName+"-*")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(tmp.Name(), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp.Name(), target); err != nil {
+		return "", err
+	}
+	return target, nil
 }
 
 func getEnvOrDefault(key, fallback string) string {

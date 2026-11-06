@@ -12,7 +12,7 @@ chmod +x "$bin_dir/brother_ql"
 printf "Building CLI...\n"
 (
   cd "$root_dir"
-  go build -o "$tmp_dir/print-agent" ./cmd/print-agent
+  go build -o "$tmp_dir/print-agent" ./cmd/printer
 )
 
 printf "Testing receipt output (file device)...\n"

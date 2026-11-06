@@ -21,6 +21,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if manage, ok := managementCommands[os.Args[1]]; ok {
+		if err := manage(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	switch os.Args[1] {
 	case "run":
 		cmdRun(os.Args[2:])
@@ -36,6 +44,8 @@ func main() {
 		cmdStickerAddress(os.Args[2:])
 	case "sticker-image":
 		cmdStickerImage(os.Args[2:])
+	case "--version", "-v":
+		fmt.Println(version)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -46,10 +56,26 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println("Usage: print-agent <command> [options]")
+	fmt.Println("Usage: printer <command> [options]")
 	fmt.Println()
-	fmt.Println("Commands:")
-	fmt.Println("  run               Start the agent (poll API for print jobs)")
+	fmt.Println("Manage the background service:")
+	fmt.Println("  status            Service, boot start, config, printers and recent logs")
+	fmt.Println("  start | stop | restart")
+	fmt.Println("                    Control the print-agent systemd user service")
+	fmt.Println("  log [-n N] [-f]   Follow the logs (default), or print the last N lines")
+	fmt.Println("  update [--check]  Install the latest GitHub release (sha256 verified, rollback on failure)")
+	fmt.Println("  rollback          Go back to the binary replaced by the last update")
+	fmt.Println("  version [--short] Print the version")
+	fmt.Println("  config [show|edit|check|path]")
+	fmt.Println("                    Show the config (secrets masked), edit it then restart, or check it")
+	fmt.Println("  test [--device D] Print a test ticket on the receipt printer")
+	fmt.Println("  autoupdate [on|off|status]")
+	fmt.Println("                    Daily automatic update at 05:00 (off by default)")
+	fmt.Println("  setup [--no-start]")
+	fmt.Println("                    Install or repair: binary, service, config, boot start")
+	fmt.Println()
+	fmt.Println("Agent and printing tools:")
+	fmt.Println("  run               Start the agent in the foreground (what the service runs)")
 	fmt.Println("  detect            List detected printer devices")
 	fmt.Println("  receipt-test      Print a sample receipt")
 	fmt.Println("  open-drawer       Open cash drawer")
@@ -57,7 +83,7 @@ func printUsage() {
 	fmt.Println("  sticker-address   Print an address sticker")
 	fmt.Println("  sticker-image     Print a sticker image")
 	fmt.Println()
-	fmt.Println("Run 'print-agent run --help' for agent options.")
+	fmt.Println("Run 'printer run --help' for agent options.")
 }
 
 func cmdDetect() {
@@ -136,7 +162,7 @@ func cmdLabel(args []string) {
 
 	posArgs := fs.Args()
 	if len(posArgs) < 3 {
-		fmt.Fprintln(os.Stderr, "Usage: print-agent label [options] <name> <price> <barcode>")
+		fmt.Fprintln(os.Stderr, "Usage: printer label [options] <name> <price> <barcode>")
 		os.Exit(1)
 	}
 
@@ -163,7 +189,7 @@ func cmdStickerAddress(args []string) {
 
 	posArgs := fs.Args()
 	if len(posArgs) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: print-agent sticker-address [options] <line1> <line2> [line3]")
+		fmt.Fprintln(os.Stderr, "Usage: printer sticker-address [options] <line1> <line2> [line3]")
 		os.Exit(1)
 	}
 
@@ -198,7 +224,7 @@ func cmdStickerImage(args []string) {
 
 	posArgs := fs.Args()
 	if len(posArgs) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: print-agent sticker-image [options] <image_path>")
+		fmt.Fprintln(os.Stderr, "Usage: printer sticker-image [options] <image_path>")
 		os.Exit(1)
 	}
 
@@ -218,7 +244,7 @@ func cmdStickerImage(args []string) {
 func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Println("Usage: print-agent run [options]")
+		fmt.Println("Usage: printer run [options]")
 		fmt.Println()
 		fmt.Println("Start the print agent to poll for jobs from a remote API.")
 		fmt.Println()
@@ -322,7 +348,7 @@ func cmdRun(args []string) {
 	// Create and start agent with auth
 	a := agent.NewWithAuth(client, auth, reg, config)
 
-	fmt.Println("Starting print-agent...")
+	fmt.Printf("Starting print-agent %s...\n", version)
 	fmt.Printf("  API URL: %s\n", *apiURL)
 	fmt.Printf("  Poll interval: %s\n", *pollInterval)
 	fmt.Printf("  Ping interval: %s\n", *pingInterval)
