@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"print-agent/internal/envfile"
@@ -49,34 +50,45 @@ func cmdUpdate(args []string) error {
 		return err
 	}
 
+	p := paths()
+	dir := filepath.Dir(p.Bin)
+	refused := readRefused(dir)
+
 	decision, err := selfupdate.Decide(version, rel.TagName)
 	if err != nil {
 		return err
 	}
-	switch decision {
-	case selfupdate.UpToDate:
-		fmt.Printf("Installed %s, latest release %s: up to date.\n", version, rel.TagName)
-	case selfupdate.UpdateAvailable:
-		fmt.Printf("Installed %s, latest release %s: update available.\n", version, rel.TagName)
-	case selfupdate.DevBuild:
-		fmt.Printf("Installed %s (development build), latest release %s.\n", version, rel.TagName)
-	}
-	if *check {
-		if decision == selfupdate.UpdateAvailable {
-			fmt.Println("Run `printer update` to install it.")
+	if *tag != "" {
+		msg, install := describeExplicit(version, rel.TagName)
+		fmt.Println(msg)
+		if !install || *check {
+			return nil
 		}
-		return nil
-	}
-	if decision == selfupdate.UpToDate && *tag == "" {
-		return nil
-	}
-	if *tag != "" && *tag == version {
-		fmt.Println("That version is already installed.")
-		return nil
+	} else {
+		switch decision {
+		case selfupdate.UpToDate:
+			fmt.Printf("Installed %s, latest release %s: up to date.\n", version, rel.TagName)
+		case selfupdate.UpdateAvailable:
+			fmt.Printf("Installed %s, latest release %s: update available.\n", version, rel.TagName)
+		case selfupdate.DevBuild:
+			fmt.Printf("Installed %s (development build), latest release %s.\n", version, rel.TagName)
+		}
+		if decision != selfupdate.UpToDate && refused == rel.TagName {
+			fmt.Printf("%s was rolled back on this PC after failing to start: skipped.\n"+
+				"Install it anyway with `printer update --version %s` once the cause is fixed.\n", rel.TagName, rel.TagName)
+			return nil
+		}
+		if *check {
+			if decision == selfupdate.UpdateAvailable {
+				fmt.Println("Run `printer update` to install it.")
+			}
+			return nil
+		}
+		if decision == selfupdate.UpToDate {
+			return nil
+		}
 	}
 
-	p := paths()
-	dir := filepath.Dir(p.Bin)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -103,10 +115,47 @@ func cmdUpdate(args []string) error {
 	return installAndRestart(ctx, staged, p.Bin, rel.TagName, *wait)
 }
 
+// describeExplicit explains what `update --version` will do and whether to install.
+func describeExplicit(current, target string) (string, bool) {
+	if current == target {
+		return fmt.Sprintf("%s is already installed.", target), false
+	}
+	cv, errC := selfupdate.ParseVersion(current)
+	tv, errT := selfupdate.ParseVersion(target)
+	switch {
+	case errC != nil || errT != nil:
+		return fmt.Sprintf("Installed %s, installing %s.", current, target), true
+	case tv.Compare(cv) < 0:
+		return fmt.Sprintf("Installed %s: downgrade to %s.", current, target), true
+	default:
+		return fmt.Sprintf("Installed %s: upgrade to %s.", current, target), true
+	}
+}
+
+// The tag of a release rolled back by the automatic health check, so the
+// daily timer does not reinstall it every night.
+const refusedFile = ".printer-refused-version"
+
+func readRefused(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, refusedFile))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func writeRefused(dir, tag string) {
+	_ = os.WriteFile(filepath.Join(dir, refusedFile), []byte(tag+"\n"), 0o644)
+}
+
+func clearRefused(dir string) {
+	_ = os.Remove(filepath.Join(dir, refusedFile))
+}
+
 // installAndRestart swaps the binary in and, when the service was running,
 // restarts it and rolls back if the new version does not stay up.
 func installAndRestart(ctx context.Context, staged, bin, newVersion string, wait time.Duration) error {
-	sd := service.New()
+	sd := newSystemd()
 	props, err := sd.Show(ctx, service.Agent)
 	wasActive := err == nil && props.Active()
 
@@ -117,13 +166,16 @@ func installAndRestart(ctx context.Context, staged, bin, newVersion string, wait
 		newVersion, tildePath(bin), tildePath(bin+selfupdate.PrevSuffix))
 
 	if !wasActive {
+		clearRefused(filepath.Dir(bin))
 		fmt.Println("The service was not running: it was not started (`printer start`).")
 		return nil
 	}
 	healthErr := restartAndWatch("restart", wait)
 	if healthErr == nil {
+		clearRefused(filepath.Dir(bin))
 		return nil
 	}
+	writeRefused(filepath.Dir(bin), newVersion)
 
 	fmt.Fprintf(os.Stderr, "The new version does not stay up: %v\nRolling back...\n", healthErr)
 	if err := selfupdate.Rollback(bin); err != nil {
@@ -138,11 +190,16 @@ func installAndRestart(ctx context.Context, staged, bin, newVersion string, wait
 
 func cmdRollback(args []string) error {
 	p := paths()
+	unlock, err := selfupdate.Lock(filepath.Dir(p.Bin))
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := selfupdate.Rollback(p.Bin); err != nil {
 		return err
 	}
 	fmt.Printf("Restored the previous binary (now: %s).\n", probeVersion(p.Bin))
-	sd := service.New()
+	sd := newSystemd()
 	if props, err := sd.Show(context.Background(), service.Agent); err == nil && props.Active() {
 		return restartAndWatch("restart", 10*time.Second)
 	}

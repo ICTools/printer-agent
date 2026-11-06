@@ -59,7 +59,8 @@ func Parse(data []byte) ([]Entry, []Problem) {
 		key, value, ok := strings.Cut(line, "=")
 		key = strings.TrimSpace(key)
 		if !ok || !keyRe.MatchString(key) {
-			problems = append(problems, Problem{n, fmt.Sprintf("expected KEY=VALUE, got %q", line), true})
+			// Never echo the line: it may hold a secret (a pasted token, a key with a typo).
+			problems = append(problems, Problem{n, "expected KEY=VALUE (line not shown, it may contain a secret)", true})
 			continue
 		}
 		v, err := unquote(strings.TrimSpace(value))
@@ -142,6 +143,17 @@ func Validate(data []byte) ([]Entry, []Problem) {
 			}
 		}
 	}
+	for _, key := range []string{"LABEL_SCRIPT_PATH", "STICKER_SCRIPT_PATH", "RECEIPT_LOGO_PATH"} {
+		if v := m[key]; v != "" {
+			if _, err := os.Stat(v); err != nil {
+				msg := key + " points to a missing file"
+				if key != "RECEIPT_LOGO_PATH" {
+					msg += ": remove the line to use the script built into the binary"
+				}
+				problems = append(problems, Problem{lineOf(entries, key), msg, false})
+			}
+		}
+	}
 	for _, e := range entries {
 		if !Known[e.Key] {
 			problems = append(problems, Problem{e.Line, "unknown variable " + e.Key + " (typo?)", false})
@@ -185,6 +197,9 @@ func IsSecret(key string) bool {
 // Mask returns the value to display: secrets are hidden, API keys keep their
 // first 4 characters so two configs can be told apart.
 func Mask(key, value string) string {
+	if strings.HasSuffix(strings.ToUpper(key), "_URL") {
+		return MaskURL(value)
+	}
 	if !IsSecret(key) || value == "" {
 		return value
 	}
@@ -211,4 +226,17 @@ func Load(path string) error {
 		}
 	}
 	return nil
+}
+
+// MaskURL hides the password of credentials embedded in a URL (user:pass@host).
+func MaskURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	if _, hasPass := u.User.Password(); hasPass {
+		u.User = url.UserPassword(u.User.Username(), "xxxxx")
+		return strings.Replace(u.String(), "xxxxx", "********", 1)
+	}
+	return raw
 }

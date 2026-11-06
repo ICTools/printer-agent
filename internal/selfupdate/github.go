@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -56,6 +57,52 @@ type Client struct {
 	BaseURL string // https://api.github.com, overridable in tests
 	Token   string // optional: needed only for a private repository
 	HTTP    *http.Client
+	// MaxSize bounds every download (DefaultMaxSize when 0).
+	MaxSize int64
+	// AllowInsecure accepts http:// and any host: local test servers only
+	// (PRINTER_UPDATE_INSECURE=1). Otherwise every request, redirects included,
+	// must be https to GitHub (or to the PRINTER_GITHUB_API host).
+	AllowInsecure bool
+}
+
+// DefaultMaxSize is far above the size of a release binary (~10 MB).
+const DefaultMaxSize = 100 << 20
+
+// githubHosts serve the API, the release pages and the asset redirects.
+func githubHost(host string) bool {
+	return host == "github.com" || host == "api.github.com" || strings.HasSuffix(host, ".githubusercontent.com")
+}
+
+// checkURL refuses anything but https to GitHub (or the configured API host).
+func (c *Client) checkURL(u *neturl.URL) error {
+	if c.AllowInsecure {
+		return nil
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("refusing non-https URL %s", u.Redacted())
+	}
+	host := u.Hostname()
+	if githubHost(host) {
+		return nil
+	}
+	if base, err := neturl.Parse(c.BaseURL); err == nil && base.Hostname() == host {
+		return nil
+	}
+	return fmt.Errorf("refusing download from unexpected host %s", host)
+}
+
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	if err := c.checkURL(req.URL); err != nil {
+		return nil, err
+	}
+	hc := *c.HTTP
+	hc.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return c.checkURL(r.URL)
+	}
+	return hc.Do(req)
 }
 
 // NewClient returns a client for repo, authenticated when a token is found
@@ -66,10 +113,11 @@ func NewClient(repo string) *Client {
 		base = v
 	}
 	return &Client{
-		Repo:    repo,
-		BaseURL: base,
-		Token:   TokenFromEnv(),
-		HTTP:    &http.Client{Timeout: 5 * time.Minute},
+		Repo:          repo,
+		BaseURL:       base,
+		Token:         TokenFromEnv(),
+		HTTP:          &http.Client{Timeout: 5 * time.Minute},
+		AllowInsecure: os.Getenv("PRINTER_UPDATE_INSECURE") == "1",
 	}
 }
 
@@ -109,7 +157,7 @@ func (c *Client) release(ctx context.Context, path string) (Release, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	c.authorize(req)
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return Release{}, err
 	}
@@ -146,7 +194,7 @@ func (c *Client) Download(ctx context.Context, a Asset, w io.Writer) error {
 	if url == a.URL {
 		c.authorize(req)
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -154,8 +202,18 @@ func (c *Client) Download(ctx context.Context, a Asset, w io.Writer) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download %s: %s", a.Name, resp.Status)
 	}
-	_, err = io.Copy(w, resp.Body)
-	return err
+	limit := c.MaxSize
+	if limit <= 0 {
+		limit = DefaultMaxSize
+	}
+	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return err
+	}
+	if n > limit {
+		return fmt.Errorf("download %s: larger than %d bytes, refused", a.Name, limit)
+	}
+	return nil
 }
 
 func (c *Client) authorize(req *http.Request) {

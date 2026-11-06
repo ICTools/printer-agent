@@ -34,3 +34,8 @@ var LabelScript []byte
 //
 //go:embed scripts/print_sticker.py
 var StickerScript []byte
+
+// StickerImage is scripts/sticker.png, used by print.py for address stickers.
+//
+//go:embed scripts/sticker.png
+var StickerImage []byte

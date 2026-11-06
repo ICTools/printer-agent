@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -29,9 +28,17 @@ func cmdSetup(args []string) error {
 
 	ctx := context.Background()
 	p := paths()
-	sd := service.New()
+	sd := newSystemd()
 
 	fmt.Println("[1/6] Binary")
+	if err := os.MkdirAll(filepath.Dir(p.Bin), 0o755); err != nil {
+		return err
+	}
+	unlock, err := selfupdate.Lock(filepath.Dir(p.Bin))
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := installSelf(p.Bin); err != nil {
 		return err
 	}
@@ -77,13 +84,13 @@ func cmdSetup(args []string) error {
 	fmt.Println("[4/6] Start at boot without login (linger)")
 	if on, err := lingerEnabled(ctx); err == nil && on {
 		fmt.Println("  already on")
-	} else if u, err := user.Current(); err == nil {
-		if out, err := exec.CommandContext(ctx, "loginctl", "enable-linger", u.Username).CombinedOutput(); err != nil {
-			fmt.Printf("  could not enable it (%s): run `sudo loginctl enable-linger %s`\n",
-				strings.TrimSpace(string(out)), u.Username)
-		} else {
-			fmt.Println("  enabled")
-		}
+	} else if name, err := currentUsername(); err != nil {
+		fmt.Printf("  could not determine the user (%v): run `sudo loginctl enable-linger <till user>`\n", err)
+	} else if out, err := exec.CommandContext(ctx, "loginctl", "enable-linger", name).CombinedOutput(); err != nil {
+		fmt.Printf("  could not enable it (%s): run `sudo loginctl enable-linger %s`\n",
+			strings.TrimSpace(string(out)), name)
+	} else {
+		fmt.Println("  enabled")
 	}
 
 	fmt.Println("[5/6] Checks")
@@ -123,6 +130,11 @@ func installSelf(bin string) error {
 	in, err := os.ReadFile(exe)
 	if err != nil {
 		return err
+	}
+	if current, err := os.ReadFile(bin); err == nil && bytes.Equal(current, in) {
+		// Same build already installed: keep printer.prev as it is.
+		fmt.Printf("  %s %s already in place\n", tildePath(bin), version)
+		return nil
 	}
 	tmp, err := os.CreateTemp(dir, ".printer-setup-*")
 	if err != nil {

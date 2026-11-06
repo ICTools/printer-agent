@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,7 +166,7 @@ func fakeGitHub(t *testing.T, content, sum string) (*Client, Release) {
 		_, _ = fmt.Fprint(w, content)
 	})
 	mux.HandleFunc("/api/sums", serve(sums))
-	return &Client{Repo: "acme/printer", BaseURL: srv.URL, HTTP: srv.Client()}, rel
+	return &Client{Repo: "acme/printer", BaseURL: srv.URL, HTTP: srv.Client(), AllowInsecure: true}, rel
 }
 
 func sha(s string) string {
@@ -217,7 +219,7 @@ func TestStageUsesAPIURLWithToken(t *testing.T) {
 func TestLatestNotFoundHintsAtToken(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
-	c := &Client{Repo: "acme/printer", BaseURL: srv.URL, HTTP: srv.Client()}
+	c := &Client{Repo: "acme/printer", BaseURL: srv.URL, HTTP: srv.Client(), AllowInsecure: true}
 	if _, err := c.Latest(context.Background()); err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN") {
 		t.Fatalf("err = %v", err)
 	}
@@ -292,4 +294,35 @@ func TestLockIsExclusive(t *testing.T) {
 		t.Fatal(err)
 	}
 	unlock2()
+}
+
+func TestDownloadRefusesNonHTTPSAndForeignHosts(t *testing.T) {
+	content := "binary"
+	c, rel := fakeGitHub(t, content, sha(content))
+	c.AllowInsecure = false
+	if _, err := c.Latest(context.Background()); err == nil || !strings.Contains(err.Error(), "non-https") {
+		t.Fatalf("http API accepted: %v", err)
+	}
+	c.BaseURL = "https://api.github.com"
+	for _, raw := range []string{"https://evil.example/printer", "http://github.com/x"} {
+		err := c.Download(context.Background(), Asset{Name: "x", BrowserDownloadURL: raw}, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "refusing") {
+			t.Errorf("%s: err = %v", raw, err)
+		}
+	}
+	_ = rel
+	u, _ := url.Parse("https://release-assets.githubusercontent.com/a")
+	if err := c.checkURL(u); err != nil {
+		t.Fatalf("GitHub asset host refused: %v", err)
+	}
+}
+
+func TestDownloadSizeLimit(t *testing.T) {
+	content := strings.Repeat("x", 2048)
+	c, rel := fakeGitHub(t, content, sha(content))
+	c.MaxSize = 1024
+	if _, err := Stage(context.Background(), c, rel, "printer_linux_amd64", t.TempDir()); err == nil ||
+		!strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("err = %v", err)
+	}
 }

@@ -29,6 +29,12 @@ var (
 	date    = ""
 )
 
+// Replaced in tests.
+var (
+	newSystemd     = service.New
+	healthPollStep = 500 * time.Millisecond
+)
+
 var managementCommands = map[string]func([]string) error{
 	"version":    cmdVersion,
 	"status":     cmdStatus,
@@ -100,7 +106,7 @@ func cmdVersion(args []string) error {
 func cmdStatus(args []string) error {
 	ctx := context.Background()
 	p := paths()
-	sd := service.New()
+	sd := newSystemd()
 
 	fmt.Printf("printer %s (%s/%s)\n\n", version, runtime.GOOS, runtime.GOARCH)
 
@@ -123,7 +129,9 @@ func cmdStatus(args []string) error {
 		fmt.Printf("          %s, %d automatic restart(s)\n", boot, props.Restarts())
 	}
 
-	if linger, err := lingerEnabled(ctx); err == nil {
+	if linger, err := lingerEnabled(ctx); err != nil {
+		fmt.Printf("Boot      linger unknown: %v\n", err)
+	} else {
 		if linger {
 			fmt.Println("Boot      linger on: starts at boot without anyone logging in")
 		} else {
@@ -139,7 +147,7 @@ func cmdStatus(args []string) error {
 		if envfile.HasFatal(problems) {
 			state = "INVALID — run `printer config check`"
 		}
-		api := envfile.Map(entries)["PRINT_AGENT_API_URL"]
+		api := envfile.MaskURL(envfile.Map(entries)["PRINT_AGENT_API_URL"])
 		fmt.Printf("Config    %s: %s (API %s)\n", tildePath(p.ConfigFile), state, api)
 	}
 
@@ -177,12 +185,27 @@ func cmdStatus(args []string) error {
 	return nil
 }
 
+// currentUsername falls back to $USER and `id -un` when user.Current fails
+// (no /etc/passwd entry, e.g. LDAP users with a static binary).
+func currentUsername() (string, error) {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username, nil
+	}
+	if name := strings.TrimSpace(os.Getenv("USER")); name != "" {
+		return name, nil
+	}
+	if out, err := exec.Command("id", "-un").Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
+		return string(bytes.TrimSpace(out)), nil
+	}
+	return "", errors.New("cannot determine the current user name")
+}
+
 func lingerEnabled(ctx context.Context) (bool, error) {
-	u, err := user.Current()
+	name, err := currentUsername()
 	if err != nil {
 		return false, err
 	}
-	out, err := exec.CommandContext(ctx, "loginctl", "show-user", u.Username, "-p", "Linger", "--value").Output()
+	out, err := exec.CommandContext(ctx, "loginctl", "show-user", name, "-p", "Linger", "--value").Output()
 	if err != nil {
 		return false, err
 	}
@@ -221,12 +244,12 @@ func cmdStartRestart(action string, args []string) error {
 
 func restartAndWatch(action string, wait time.Duration) error {
 	ctx := context.Background()
-	sd := service.New()
+	sd := newSystemd()
 	if err := sd.Ctl(ctx, action, service.Agent); err != nil {
 		return err
 	}
 	fmt.Printf("%s: %s, checking it stays up for %s...\n", service.Agent, action, wait)
-	if err := sd.WaitHealthy(ctx, service.Agent, wait, 500*time.Millisecond); err != nil {
+	if err := sd.WaitHealthy(ctx, service.Agent, wait, healthPollStep); err != nil {
 		return fmt.Errorf("%w — see `printer log -n 50`", err)
 	}
 	fmt.Println("OK: the agent is running.")
@@ -234,7 +257,7 @@ func restartAndWatch(action string, wait time.Duration) error {
 }
 
 func cmdStop(args []string) error {
-	if err := service.New().Ctl(context.Background(), "stop", service.Agent); err != nil {
+	if err := newSystemd().Ctl(context.Background(), "stop", service.Agent); err != nil {
 		return err
 	}
 	fmt.Println("Stopped. It will start again at the next boot (or `printer start`).")
@@ -371,7 +394,7 @@ func configEdit(path string) error {
 		}
 	}
 	fmt.Println("Config saved, restarting the service...")
-	if err := service.New().Ctl(context.Background(), "enable", service.Agent); err != nil {
+	if err := newSystemd().Ctl(context.Background(), "enable", service.Agent); err != nil {
 		return err
 	}
 	return restartAndWatch("restart", 10*time.Second)
@@ -404,7 +427,7 @@ func cmdTest(args []string) error {
 
 func cmdAutoUpdate(args []string) error {
 	ctx := context.Background()
-	sd := service.New()
+	sd := newSystemd()
 	sub := "status"
 	if len(args) > 0 {
 		sub = args[0]

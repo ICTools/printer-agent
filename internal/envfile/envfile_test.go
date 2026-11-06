@@ -112,3 +112,37 @@ func TestLoadDoesNotOverride(t *testing.T) {
 		t.Fatalf("A=%q B=%q", os.Getenv("ENVFILE_TEST_A"), os.Getenv("ENVFILE_TEST_B"))
 	}
 }
+
+func TestProblemsNeverEchoSecrets(t *testing.T) {
+	data := []byte("PRINT_AGENT_API_URL=https://app.example.test\nPRINT_AGENT_API_KEY=k123456789\n" +
+		"PRINT_AGENT_API_SECRET=s\nPRINT AGENT API SECRET=leakme-s3cr3t\nghp_leakme_token\n" +
+		"PRINT_AGENT_API_SECRET=\"leakme-unterminated\n")
+	_, problems := Validate(data)
+	if len(problems) < 3 {
+		t.Fatalf("problems: %v", problems)
+	}
+	for _, p := range problems {
+		if strings.Contains(p.String(), "leakme") {
+			t.Errorf("secret echoed: %s", p)
+		}
+	}
+}
+
+func TestValidateWarnsAboutMissingScriptPath(t *testing.T) {
+	data := []byte("PRINT_AGENT_API_URL=https://app.example.test\nPRINT_AGENT_API_KEY=k123456789\n" +
+		"PRINT_AGENT_API_SECRET=s\nLABEL_SCRIPT_PATH=/nonexistent/clone/scripts/print.py\n")
+	_, problems := Validate(data)
+	if HasFatal(problems) || len(problems) != 1 || !strings.Contains(problems[0].Message, "LABEL_SCRIPT_PATH points to a missing file") {
+		t.Fatalf("problems: %v", problems)
+	}
+}
+
+func TestMaskURLCredentials(t *testing.T) {
+	if got := Mask("PRINT_AGENT_API_URL", "https://bob:hunter2@app.example.test/api"); strings.Contains(got, "hunter2") ||
+		!strings.Contains(got, "bob:********@app.example.test") {
+		t.Fatalf("got %q", got)
+	}
+	if got := Mask("PRINT_AGENT_API_URL", "https://app.example.test"); got != "https://app.example.test" {
+		t.Fatalf("got %q", got)
+	}
+}

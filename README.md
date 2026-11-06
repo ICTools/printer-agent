@@ -56,9 +56,10 @@ sudo apt install python3-pil       # étiquettes et stickers
 python3 -m pip install brother_ql  # étiquettes Brother QL (ou pipx install brother_ql)
 ```
 
-Les scripts Python d'étiquettes (`scripts/print.py`, `scripts/print_sticker.py`) sont **embarqués dans le binaire** et
-extraits au besoin dans `~/.cache/print-agent/scripts/` ; `LABEL_SCRIPT_PATH` / `STICKER_SCRIPT_PATH` restent
-prioritaires s'ils sont définis.
+Les scripts Python d'étiquettes (`scripts/print.py`, `scripts/print_sticker.py`) et `scripts/sticker.png` sont
+**embarqués dans le binaire** et extraits ensemble au besoin dans `~/.cache/print-agent/scripts/<hash>/`.
+`LABEL_SCRIPT_PATH` / `STICKER_SCRIPT_PATH` restent prioritaires **si le fichier existe** ; sinon l'agent journalise un
+avertissement et prend la copie embarquée (`printer config check` et `printer setup` signalent un chemin absent).
 
 ### Dépôt privé
 
@@ -113,8 +114,16 @@ printer update
 6. sinon **rollback** : remet l'ancien binaire et redémarre. Si l'ancien ne tient pas non plus, le problème n'est pas
    la mise à jour (réseau, API, config) : voir `printer log -n 100`.
 
-Un verrou empêche deux mises à jour simultanées. Si les unités systemd changent entre deux versions, les notes de
-release le disent : lancer alors `printer setup`.
+Un verrou empêche deux mises à jour (ou un `rollback`, un `setup`) simultanés. Une version annulée par le rollback
+automatique est mémorisée (`~/.local/bin/.printer-refused-version`) : `printer update` et le timer ne la réinstallent
+plus ; une version plus récente est installée normalement, et `printer update --version vX.Y.Z` force celle-là.
+`--version` avec une version plus ancienne fait un *downgrade* (annoncé comme tel).
+
+Les téléchargements passent uniquement en https vers GitHub (`github.com`, `api.github.com`,
+`*.githubusercontent.com`, redirections comprises) et sont limités à 100 Mo. `PRINTER_GITHUB_API` (GitHub Enterprise)
+doit être en https ; `PRINTER_UPDATE_INSECURE=1` lève ces contrôles pour un serveur de test local, jamais en production.
+
+Si les unités systemd changent entre deux versions, les notes de release le disent : lancer alors `printer setup`.
 
 ### Mise à jour automatique (désactivée par défaut)
 
@@ -164,6 +173,7 @@ config**, la migration est donc :
 
 ```sh
 cp ~/.config/print-agent/env ~/print-agent-env.backup     # sécurité
+grep -E '^(LABEL|STICKER)_SCRIPT_PATH' ~/.config/print-agent/env   # chemins vers l'ancien clone ?
 curl -fsSL https://raw.githubusercontent.com/ICTools/printer-agent/main/deploy/install.sh | bash
 printer status          # active (running), config OK
 printer test            # ticket de test
@@ -171,8 +181,11 @@ printer test            # ticket de test
 
 `printer setup` (lancé par le script) : garde `~/.config/print-agent/env` tel quel (droits passés à `600`), réécrit
 `print-agent.service` avec `ExecStart=%h/.local/bin/printer run`, déplace l'ancien binaire en
-`~/.local/bin/print-agent.legacy` et le remplace par un lien vers `printer`, puis redémarre le service. Le clone Go
-local n'est plus nécessaire.
+`~/.local/bin/print-agent.legacy` et le remplace par un lien vers `printer`, puis redémarre le service.
+
+**Avant de supprimer l'ancien clone Go** : si la config contient `LABEL_SCRIPT_PATH` ou `STICKER_SCRIPT_PATH` pointant
+dans ce clone, retirer ces lignes (`printer config edit`) pour utiliser les scripts embarqués. `printer config check`
+avertit si un de ces chemins n'existe pas. Le clone n'est ensuite plus nécessaire.
 
 Retour arrière (si besoin) : `mv ~/.local/bin/print-agent.legacy ~/.local/bin/print-agent` (remplace le lien), remettre
 `ExecStart=%h/.local/bin/print-agent run` dans `~/.config/systemd/user/print-agent.service`, puis
