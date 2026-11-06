@@ -1,51 +1,234 @@
-# print-agent
+# printer — agent d'impression de la caisse
 
-Agent d'impression pour points de vente. Fonctionne en mode autonome (polling API) ou en CLI.
+Agent d'impression des points de vente Chapitre Neuf : il récupère les jobs de l'API (Mercure SSE + polling de
+secours) et imprime tickets ESC/POS, étiquettes et stickers, ouvre le tiroir-caisse.
 
-## Installation
+Tout tient dans **un seul binaire, `printer`** : l'agent lui-même (`printer run`, lancé par systemd) et les commandes
+d'exploitation (`printer status`, `printer log`, `printer update`…). Il tourne en arrière-plan comme service systemd
+*utilisateur*, démarre au boot sans session ouverte (linger) et se met à jour depuis les GitHub Releases.
 
-### Pré-requis système
+| Emplacement | Rôle |
+|---|---|
+| `~/.local/bin/printer` | le binaire (`printer.prev` : version précédente, pour `printer rollback`) |
+| `~/.local/bin/print-agent` | lien vers `printer` (compatibilité avec l'ancienne installation) |
+| `~/.config/print-agent/env` | la configuration (identifiants API, imprimantes, adresse du magasin), droits `600` |
+| `~/.config/systemd/user/print-agent.service` | le service (réécrit par `printer setup`, ne pas l'éditer) |
+| `~/.config/systemd/user/printer-update.{service,timer}` | la mise à jour automatique (désactivée par défaut) |
 
-- Linux avec accès aux devices imprimante (`/dev/usb/*`, `/dev/lp*`)
-- Python 3
-- `brother_ql` CLI (pour étiquettes Brother QL)
-- Pillow (Python imaging)
+## Installation sur un PC neuf
 
-### Dépendances Python
+Pré-requis : Ubuntu (ou dérivé) avec systemd, `curl`, l'utilisateur de la caisse. **Pas besoin de Go.**
 
 ```sh
-python3 -m pip install pillow brother_ql
+# en tant qu'utilisateur de la caisse (pas root, pas sudo)
+curl -fsSL https://raw.githubusercontent.com/ICTools/printer-agent/main/deploy/install.sh | bash
 ```
 
-### Permissions device
+Le script télécharge le binaire de la dernière release pour le processeur du PC (`amd64` ou `arm64`), vérifie son
+sha256 contre `checksums.txt`, puis lance `printer setup`, qui :
+
+1. installe `~/.local/bin/printer` ;
+2. crée `~/.config/print-agent/env` depuis le modèle **s'il n'existe pas** (une config existante n'est jamais écrasée) ;
+3. installe les unités systemd utilisateur et active le service au boot (dès que la config est valide) ;
+4. active le *linger* (`loginctl enable-linger`) : le service démarre au boot sans que personne ne se connecte ;
+5. vérifie le PATH, l'accès aux imprimantes, `python3` et `brother_ql` ;
+6. démarre le service si la config est remplie.
+
+Ensuite :
 
 ```sh
-# Vérifier les permissions
-ls -l /dev/usb/lp0
-
-# Ajouter l'utilisateur au groupe lp si nécessaire
-sudo usermod -aG lp $USER
+printer config edit     # renseigner PRINT_AGENT_API_URL / _KEY / _SECRET ; valide puis redémarre
+printer status
+printer test            # imprime un ticket de test
 ```
 
-## Build
+Si `printer` n'est pas trouvé, ouvrir un nouveau terminal (Ubuntu ajoute `~/.local/bin` au PATH à la connexion) ou
+utiliser `~/.local/bin/printer`.
+
+Options : une version précise `curl -fsSL …/install.sh | bash -s -- --version v1.2.0`.
+Relancer le script (ou `printer setup`) est sans risque : il répare l'installation et garde la config.
+
+### Dépendances système
 
 ```sh
-go build -o print-agent ./cmd/print-agent
+sudo usermod -aG lp $USER          # accès à /dev/usb/lp* (puis redémarrer la session / le PC)
+sudo apt install python3-pil       # étiquettes et stickers
+python3 -m pip install brother_ql  # étiquettes Brother QL (ou pipx install brother_ql)
+```
+
+Les scripts Python d'étiquettes (`scripts/print.py`, `scripts/print_sticker.py`) et `scripts/sticker.png` sont
+**embarqués dans le binaire** et extraits ensemble au besoin dans `~/.cache/print-agent/scripts/<hash>/`.
+`LABEL_SCRIPT_PATH` / `STICKER_SCRIPT_PATH` restent prioritaires **si le fichier existe** ; sinon l'agent journalise un
+avertissement et prend la copie embarquée (`printer config check` et `printer setup` signalent un chemin absent).
+
+### Dépôt privé
+
+Le dépôt est public aujourd'hui : rien à faire. S'il devient privé, les releases demandent une authentification :
+
+- installation : `raw.githubusercontent.com` ne sert plus le script ; avec `gh` connecté (`gh auth login`) :
+  `gh api repos/ICTools/printer-agent/contents/deploy/install.sh -H 'Accept: application/vnd.github.raw' | bash`.
+  Le script bascule tout seul sur `gh release download` quand le téléchargement public échoue (`gh` utilise
+  `GH_TOKEN`/`GITHUB_TOKEN` s'ils sont définis) ;
+- `printer update` (manuel ou automatique) prend, dans l'ordre : `PRINTER_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`
+  (environnement, ou ligne `PRINTER_GITHUB_TOKEN=…` dans `~/.config/print-agent/env`), puis le token de `gh`. Un
+  token *fine-grained* en lecture seule sur ce seul dépôt (Contents: read) suffit.
+
+## Commandes
+
+| Commande | Effet |
+|---|---|
+| `printer status` | version, état du service, démarrage au boot, linger, config, imprimantes, derniers logs |
+| `printer start` / `stop` / `restart` | pilote le service ; `start`/`restart` refusent une config invalide et vérifient que l'agent reste démarré |
+| `printer log` | suit les logs en temps réel (50 dernières lignes puis la suite) |
+| `printer log -n 200` | les 200 dernières lignes, sans suivre (`-f` pour suivre aussi) |
+| `printer log --since today --errors` | erreurs du jour (`--since "1 hour ago"`, `--since 2026-11-06`…) |
+| `printer update --check` | compare la version installée à la dernière release |
+| `printer update` | installe la dernière release (voir ci-dessous) |
+| `printer update --version v1.2.0` | installe une version précise (aussi pour revenir en arrière) |
+| `printer rollback` | revient au binaire remplacé par la dernière mise à jour (et inversement) |
+| `printer version` | version, commit, date de build (`--short` : juste la version) |
+| `printer config` | affiche la config, secrets masqués (`PRINT_AGENT_API_SECRET=********`, clé API tronquée) |
+| `printer config edit` | ouvre `$VISUAL`/`$EDITOR`/nano, valide, propose de corriger, puis active et redémarre le service |
+| `printer config check` / `path` | valide la config / affiche son chemin |
+| `printer test` | imprime un ticket « TEST IMPRESSION » (version, poste, date, device) sur l'imprimante ticket, sans tiroir |
+| `printer autoupdate on` / `off` / `status` | mise à jour automatique quotidienne |
+| `printer setup` | installe ou répare tout (idempotent) |
+| `printer run` | l'agent au premier plan (ce que lance systemd) — options : `printer run --help` |
+| `printer detect`, `receipt-test`, `open-drawer`, `label`, `sticker-address`, `sticker-image` | outils d'impression manuels (voir « Mode CLI ») |
+
+## Mise à jour
+
+```sh
+printer update --check
+printer update
+```
+
+`printer update` :
+
+1. interroge l'API GitHub (`releases/latest`) et compare les versions (semver ; un build de dev est toujours remplacé) ;
+2. télécharge `printer_linux_<arch>` et `checksums.txt`, **vérifie le sha256** (rien n'est installé sinon) ;
+3. exécute le nouveau binaire (`version --short`) pour vérifier qu'il tourne et annonce la bonne version ;
+4. remplace `~/.local/bin/printer` par un `rename` **atomique**, l'ancien est gardé en `printer.prev` ;
+5. si le service tournait, le redémarre et vérifie pendant 20 s (`--wait`) qu'il reste actif sans redémarrage
+   automatique de systemd ;
+6. sinon **rollback** : remet l'ancien binaire et redémarre. Si l'ancien ne tient pas non plus, le problème n'est pas
+   la mise à jour (réseau, API, config) : voir `printer log -n 100`.
+
+Un verrou empêche deux mises à jour (ou un `rollback`, un `setup`) simultanés. Une version annulée par le rollback
+automatique est mémorisée (`~/.local/bin/.printer-refused-version`) : `printer update` et le timer ne la réinstallent
+plus ; une version plus récente est installée normalement, et `printer update --version vX.Y.Z` force celle-là.
+`--version` avec une version plus ancienne fait un *downgrade* (annoncé comme tel).
+
+Les téléchargements passent uniquement en https vers GitHub (`github.com`, `api.github.com`,
+`*.githubusercontent.com`, redirections comprises) et sont limités à 100 Mo. `PRINTER_GITHUB_API` (GitHub Enterprise)
+doit être en https ; `PRINTER_UPDATE_INSECURE=1` lève ces contrôles pour un serveur de test local, jamais en production.
+
+Si les unités systemd changent entre deux versions, les notes de release le disent : lancer alors `printer setup`.
+
+### Mise à jour automatique (désactivée par défaut)
+
+```sh
+printer autoupdate on      # tous les jours vers 05:00 (+ jusqu'à 30 min aléatoires)
+printer autoupdate off
+journalctl --user -u printer-update.service   # historique
+```
+
+Désactivée par défaut : une mise à jour redémarre l'agent, et une caisse doit changer de version quand on l'a décidé
+(après une release testée). Le timer n'est pas *persistent* : un PC éteint à 05:00 n'est pas mis à jour au démarrage,
+en pleine ouverture. Le rollback automatique s'applique aussi.
+
+## Logs
+
+Les logs vont dans journald (rotation gérée par journald) :
+
+```sh
+printer log                         # suivi temps réel
+printer log -n 100                  # 100 dernières lignes
+printer log --since today --errors  # erreurs du jour
+journalctl --user -u print-agent --since "2026-11-06 09:00" --until "2026-11-06 10:00"
+```
+
+## Dépannage
+
+| Symptôme | Piste |
+|---|---|
+| `printer: command not found` | nouveau terminal, ou `~/.local/bin/printer` |
+| `status` : `activating (auto-restart)`, restarts qui montent | l'agent quitte au démarrage : `printer log -n 50` ; souvent identifiants refusés ou API injoignable (`printer config check`) |
+| `Failed to connect to bus` / `systemctl --user` échoue | lancer les commandes en session normale de l'utilisateur de la caisse, pas via `sudo` |
+| le service ne démarre qu'après connexion | linger off : `printer setup` (ou `sudo loginctl enable-linger $USER`) |
+| `Permission denied` sur `/dev/usb/lp0` | `sudo usermod -aG lp $USER` puis redémarrer ; `printer status` liste les devices et leur accès |
+| aucune imprimante détectée | câble / alimentation ; `printer detect` |
+| `brother_ql not found` | installer `brother_ql` (voir Dépendances) ; vérifier `PATH`/`PYTHON_PATH` |
+| `update` : `checksum mismatch` | téléchargement corrompu ou release modifiée : rien n'a été installé, relancer ; sinon vérifier la release |
+| `update` : `no matching release` | aucune release publiée, ou dépôt privé sans token (voir « Dépôt privé ») |
+| une mise à jour pose problème | `printer rollback`, ou `printer update --version vX.Y.Z` |
+| texte illisible sur le ticket | les accents sont convertis en ASCII (normal) |
+| TLS en local | `printer run -insecure` |
+
+## Migration depuis l'ancienne installation
+
+Ancienne installation (`deploy/install.sh` d'avant, build Go local) : binaire `~/.local/bin/print-agent`, service
+`print-agent`, config `~/.config/print-agent/env`. Le nouveau binaire garde **le même nom de service et la même
+config**, la migration est donc :
+
+```sh
+cp ~/.config/print-agent/env ~/print-agent-env.backup     # sécurité
+grep -E '^(LABEL|STICKER)_SCRIPT_PATH' ~/.config/print-agent/env   # chemins vers l'ancien clone ?
+curl -fsSL https://raw.githubusercontent.com/ICTools/printer-agent/main/deploy/install.sh | bash
+printer status          # active (running), config OK
+printer test            # ticket de test
+```
+
+`printer setup` (lancé par le script) : garde `~/.config/print-agent/env` tel quel (droits passés à `600`), réécrit
+`print-agent.service` avec `ExecStart=%h/.local/bin/printer run`, déplace l'ancien binaire en
+`~/.local/bin/print-agent.legacy` et le remplace par un lien vers `printer`, puis redémarre le service.
+
+**Avant de supprimer l'ancien clone Go** : si la config contient `LABEL_SCRIPT_PATH` ou `STICKER_SCRIPT_PATH` pointant
+dans ce clone, retirer ces lignes (`printer config edit`) pour utiliser les scripts embarqués. `printer config check`
+avertit si un de ces chemins n'existe pas. Le clone n'est ensuite plus nécessaire.
+
+Retour arrière (si besoin) : `mv ~/.local/bin/print-agent.legacy ~/.local/bin/print-agent` (remplace le lien), remettre
+`ExecStart=%h/.local/bin/print-agent run` dans `~/.config/systemd/user/print-agent.service`, puis
+`systemctl --user daemon-reload && systemctl --user restart print-agent`.
+
+## Désinstallation
+
+```sh
+systemctl --user disable --now print-agent printer-update.timer
+rm ~/.config/systemd/user/print-agent.service ~/.config/systemd/user/printer-update.*
+systemctl --user daemon-reload
+rm ~/.local/bin/printer ~/.local/bin/printer.prev ~/.local/bin/print-agent
+# la config ~/.config/print-agent/env contient les identifiants : la supprimer si le poste est retiré
+```
+
+## Développement
+
+```sh
+go vet ./... && go test ./...
+go build -o printer ./cmd/printer
+./deploy/install.sh --from-source     # installe le build local (version = git describe)
+```
+
+### Publier une release
+
+Les releases sont produites par `.github/workflows/release.yml` sur un tag `v*` : tests, build `linux/amd64` et
+`linux/arm64` (statiques, `CGO_ENABLED=0`, version injectée par `-ldflags -X main.version`), `checksums.txt`, puis
+GitHub Release avec notes générées. Un tag `vX.Y.Z-rc.1` crée une pré-release (ignorée par `printer update`).
+
+```sh
+git checkout main && git pull
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
 ```
 
 ---
 
-## Mode Agent (recommandé)
+## Mode Agent (`printer run`)
 
-L'agent se connecte à une API distante, récupère les jobs d'impression et les exécute automatiquement.
-
-### Démarrage
+Ce que lance le service. À la main (tests) :
 
 ```sh
-./print-agent run \
-  -api-url https://api.monsite.com \
-  -api-key $API_KEY \
-  -api-secret $API_SECRET
+printer run -api-url https://api.monsite.com -api-key $API_KEY -api-secret $API_SECRET
 ```
 
 ### Options
@@ -68,7 +251,7 @@ L'agent se connecte à une API distante, récupère les jobs d'impression et les
 ### Test local (sans imprimante)
 
 ```sh
-./print-agent run \
+printer run \
   -api-url https://localhost \
   -api-key $API_KEY \
   -api-secret $API_SECRET \
@@ -404,37 +587,37 @@ Commandes pour tests manuels ou intégration scripts.
 ### Détecter les imprimantes
 
 ```sh
-./print-agent detect
+printer detect
 ```
 
 ### Imprimer un ticket test
 
 ```sh
-./print-agent receipt-test --device /dev/usb/epson_tmt20iii --logo /path/logo.png
+printer receipt-test --device /dev/usb/epson_tmt20iii --logo /path/logo.png
 ```
 
 ### Ouvrir le tiroir-caisse
 
 ```sh
-./print-agent open-drawer --device /dev/usb/epson_tmt20iii
+printer open-drawer --device /dev/usb/epson_tmt20iii
 ```
 
 ### Imprimer une étiquette prix
 
 ```sh
-./print-agent label "Livre" "12.90 €" 9781234567890 --footer "Chapitre Neuf"
+printer label "Livre" "12.90 €" 9781234567890 --footer "Chapitre Neuf"
 ```
 
 ### Imprimer un sticker adresse
 
 ```sh
-./print-agent sticker-address "Chapitre Neuf" "21 Avenue des Combattants" "1370 Jodoigne"
+printer sticker-address "Chapitre Neuf" "21 Avenue des Combattants" "1370 Jodoigne"
 ```
 
 ### Imprimer une image
 
 ```sh
-./print-agent sticker-image ./path/to/image.png
+printer sticker-image ./path/to/image.png
 ```
 
 ---
@@ -476,8 +659,8 @@ Commandes pour tests manuels ou intégration scripts.
 ### Tickets et tiroir (ESC/POS vers fichier)
 
 ```sh
-RECEIPT_PRINTER_DEVICE=/tmp/receipt.bin ./print-agent receipt-test
-./print-agent open-drawer --device /tmp/drawer.bin
+RECEIPT_PRINTER_DEVICE=/tmp/receipt.bin printer receipt-test
+printer open-drawer --device /tmp/drawer.bin
 ```
 
 ### Étiquettes (mock brother_ql)
@@ -486,7 +669,7 @@ RECEIPT_PRINTER_DEVICE=/tmp/receipt.bin ./print-agent receipt-test
 export PATH="$(pwd)/scripts:$PATH"
 chmod +x scripts/mock_brother_ql.sh
 ln -sf mock_brother_ql.sh scripts/brother_ql
-./print-agent label "Test" "9.99 €" 1234567890123
+printer label "Test" "9.99 €" 1234567890123
 ```
 
 ---
@@ -500,10 +683,3 @@ Si `-health-addr` est configuré, l'agent expose :
 - `GET /status` - Statut combiné local + serveur
 
 ---
-
-## Troubleshooting
-
-- **brother_ql not found** : vérifier installation et PATH
-- **Permission denied** : vérifier groupe `lp` et règles udev
-- **Texte illisible** : les accents sont convertis en ASCII
-- **TLS error en local** : utiliser `-insecure`

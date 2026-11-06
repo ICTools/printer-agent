@@ -1,12 +1,19 @@
 package label
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"time"
+
+	printagent "print-agent"
 )
 
 type LabelOptions struct {
@@ -85,23 +92,103 @@ func PrintStickerImage(ctx context.Context, opts StickerImageOptions) error {
 }
 
 func defaultScriptPath(scriptName string) string {
-	if env := os.Getenv("LABEL_SCRIPT_PATH"); env != "" && scriptName == "print.py" {
-		return env
+	envKey := ""
+	switch scriptName {
+	case "print.py":
+		envKey = "LABEL_SCRIPT_PATH"
+	case "print_sticker.py":
+		envKey = "STICKER_SCRIPT_PATH"
 	}
-	if env := os.Getenv("STICKER_SCRIPT_PATH"); env != "" && scriptName == "print_sticker.py" {
-		return env
+	if env := os.Getenv(envKey); envKey != "" && env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+		// Typically a path into a repository clone deleted after the migration
+		// to release binaries: fall back to the copy built into the binary.
+		log.Printf("[WARN] %s=%s not found, using the script built into the binary", envKey, env)
 	}
 
-	execPath, err := os.Executable()
-	if err != nil {
-		return scriptName
+	if execPath, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(execPath), "scripts", scriptName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
 	}
-	base := filepath.Dir(execPath)
-	candidate := filepath.Join(base, "scripts", scriptName)
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
+	if dir, err := extractEmbeddedScripts(); err == nil {
+		return filepath.Join(dir, scriptName)
 	}
 	return scriptName
+}
+
+// embeddedFiles are written together in one directory: print.py looks for
+// ./sticker.png in its working directory (the script directory).
+func embeddedFiles() map[string][]byte {
+	return map[string][]byte{
+		"print.py":         printagent.LabelScript,
+		"print_sticker.py": printagent.StickerScript,
+		"sticker.png":      printagent.StickerImage,
+	}
+}
+
+// extractEmbeddedScripts writes the files built into the binary to the user
+// cache (one directory per content hash, so an updated binary never runs a
+// stale script) and returns the directory. It lets a release binary print
+// labels without a checkout of the repository.
+func extractEmbeddedScripts() (string, error) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return extractTo(filepath.Join(cacheDir, "print-agent", "scripts"), embeddedFiles())
+}
+
+func extractTo(root string, files map[string][]byte) (string, error) {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	h := sha256.New()
+	for _, name := range names {
+		h.Write([]byte(name))
+		h.Write(files[name])
+	}
+	dir := filepath.Join(root, hex.EncodeToString(h.Sum(nil))[:12])
+	for _, name := range names {
+		if _, err := writeScriptOnce(dir, name, files[name]); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+func writeScriptOnce(dir, scriptName string, content []byte) (string, error) {
+	target := filepath.Join(dir, scriptName)
+	if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, content) {
+		return target, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, "."+scriptName+"-*")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(tmp.Name(), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp.Name(), target); err != nil {
+		return "", err
+	}
+	return target, nil
 }
 
 func getEnvOrDefault(key, fallback string) string {

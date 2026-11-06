@@ -1,0 +1,13 @@
+# Managed by `printer setup`. Disabled by default: `printer autoupdate on|off`.
+[Unit]
+Description=Print Agent — daily update check
+
+[Timer]
+# Early morning, before the shop opens. Not Persistent: a PC switched off at
+# that time is not updated at boot, in the middle of the opening hours.
+OnCalendar=*-*-* 05:00
+RandomizedDelaySec=30min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

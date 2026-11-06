@@ -1,0 +1,10 @@
+# Managed by `printer setup`. Triggered by printer-update.timer
+# (enable with `printer autoupdate on`).
+[Unit]
+Description=Print Agent — install the latest GitHub release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/printer update
