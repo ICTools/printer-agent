@@ -54,13 +54,13 @@ type FetchNextJobParams struct {
 
 // ReceiptPayload is the payload for a receipt print job.
 type ReceiptPayload struct {
-	Type          string        `json:"type,omitempty"` // "put_aside" for put-aside tickets
-	StoreAddress1 string        `json:"store_address_1,omitempty"`
-	StoreAddress2 string        `json:"store_address_2,omitempty"`
-	StorePhone    string        `json:"store_phone,omitempty"`
-	StoreVAT      string        `json:"store_vat,omitempty"`
-	StoreSocial   string        `json:"store_social,omitempty"`
-	StoreWebsite  string        `json:"store_website,omitempty"`
+	Type           string        `json:"type,omitempty"` // "put_aside" for put-aside tickets
+	StoreAddress1  string        `json:"store_address_1,omitempty"`
+	StoreAddress2  string        `json:"store_address_2,omitempty"`
+	StorePhone     string        `json:"store_phone,omitempty"`
+	StoreVAT       string        `json:"store_vat,omitempty"`
+	StoreSocial    string        `json:"store_social,omitempty"`
+	StoreWebsite   string        `json:"store_website,omitempty"`
 	Barcode        string        `json:"barcode,omitempty"`
 	Items          []ReceiptItem `json:"items"`
 	Payments       []string      `json:"payments,omitempty"`
@@ -68,6 +68,12 @@ type ReceiptPayload struct {
 	Total          string        `json:"total,omitempty"`
 	DiscountLabel  string        `json:"discount_label,omitempty"`
 	DiscountAmount string        `json:"discount_amount,omitempty"`
+	// BarcodeSymbology is how Barcode is printed: "CODE128" (chapitreneuf #874). Servers
+	// that predate the field omit it, and the agent then prints CODE128 as well.
+	BarcodeSymbology string `json:"barcode_symbology,omitempty"`
+	// IsGiftReceipt / IsReturnReceipt: gift or return slip, printed without any price or total.
+	IsGiftReceipt   bool `json:"is_gift_receipt,omitempty"`
+	IsReturnReceipt bool `json:"is_return_receipt,omitempty"`
 }
 
 // PutAsidePayload is the payload for a "put aside" ticket.
