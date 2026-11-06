@@ -6,6 +6,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -39,6 +40,11 @@ type Receipt struct {
 	Total          string
 	DiscountLabel  string
 	DiscountAmount string
+	// BarcodeSymbology is the payload "barcode_symbology" ("CODE128" or empty: CODE128).
+	BarcodeSymbology string
+	// IsGiftReceipt / IsReturnReceipt hide every price and the total (chapitreneuf #874).
+	IsGiftReceipt   bool
+	IsReturnReceipt bool
 }
 
 type ReceiptItem struct {
@@ -148,24 +154,37 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 		_ = f.Close()
 	}()
 
+	return p.writeReceipt(f, r)
+}
+
+// sleep is replaced in tests so rendering a receipt does not wait for the printer.
+var sleep = time.Sleep
+
+// writeReceipt renders the receipt as ESC/POS bytes.
+//
+// Gift and return receipts (is_gift_receipt / is_return_receipt, chapitreneuf #874) carry a
+// title and never show a price, a discount, a subtotal, a total or the payments. Every
+// receipt ends with the sale barcode (CODE128, see writeSaleBarcode).
+func (p *Printer) writeReceipt(w io.Writer, r Receipt) error {
 	sendLine := func(data string) error {
 		data = removeAccents(data)
-		_, err := f.Write([]byte(data))
+		_, err := w.Write([]byte(data))
 		return err
 	}
 	sendRaw := func(data []byte) error {
-		_, err := f.Write(data)
+		_, err := w.Write(data)
 		return err
 	}
 	nl := "\n"
+	priceless := r.IsGiftReceipt || r.IsReturnReceipt
 
 	if err := sendRaw([]byte{0x1b, '@'}); err != nil {
 		return err
 	}
-	time.Sleep(200 * time.Millisecond)
+	sleep(200 * time.Millisecond)
 
 	if p.LogoPath != "" {
-		_ = printImageGraphicsMode(f, p.LogoPath)
+		_ = printImageGraphicsMode(w, p.LogoPath)
 		_ = sendRaw([]byte{0x0A})
 	}
 
@@ -182,27 +201,39 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 	storeVAT := getEnvOrDefault("STORE_VAT_NUMBER", r.StoreVAT)
 
 	if storeAddress1 != "" {
-		if err := sendLine(storeAddress1+nl); err != nil {
+		if err := sendLine(storeAddress1 + nl); err != nil {
 			return err
 		}
 	}
 	if storeAddress2 != "" {
-		if err := sendLine(storeAddress2+nl); err != nil {
+		if err := sendLine(storeAddress2 + nl); err != nil {
 			return err
 		}
 	}
 	if storePhone != "" {
-		if err := sendLine("Tel: "+storePhone+nl); err != nil {
+		if err := sendLine("Tel: " + storePhone + nl); err != nil {
 			return err
 		}
 	}
 	if storeVAT != "" {
-		if err := sendLine("TVA: "+storeVAT+nl); err != nil {
+		if err := sendLine("TVA: " + storeVAT + nl); err != nil {
 			return err
 		}
 	}
 	if err := sendLine(nl); err != nil {
 		return err
+	}
+
+	if title := r.title(); title != "" {
+		if err := sendRaw([]byte{0x1b, 'E', 1}); err != nil {
+			return err
+		}
+		if err := sendLine(title + nl + nl); err != nil {
+			return err
+		}
+		if err := sendRaw([]byte{0x1b, 'E', 0}); err != nil {
+			return err
+		}
 	}
 
 	if err := sendRaw([]byte{0x1b, 'a', 0}); err != nil {
@@ -224,21 +255,31 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 	col2 := 23
 	col3 := 35
 	header := "ARTICLE"
-	header += spaces(col2-len(header)) + "QTE"
-	header += spaces(col3-(col2+len("QTE"))) + "PRIX"
+	if priceless {
+		header += spaces(lineWidth-len(header)-len("QTE")) + "QTE"
+	} else {
+		header += spaces(col2-len(header)) + "QTE"
+		header += spaces(col3-(col2+len("QTE"))) + "PRIX"
+	}
 
-	if err := sendLine(header+nl); err != nil {
+	if err := sendLine(header + nl); err != nil {
 		return err
 	}
 
 	if err := sendRaw([]byte{0x1b, 'E', 0}); err != nil {
 		return err
 	}
-	if err := sendLine(strings.Repeat("-", 48)+nl); err != nil {
+	if err := sendLine(strings.Repeat("-", lineWidth) + nl); err != nil {
 		return err
 	}
 
 	for _, it := range r.Items {
+		if priceless {
+			if err := sendLine(pricelessItemLine(it) + nl); err != nil {
+				return err
+			}
+			continue
+		}
 		name := it.Name
 		if len(name) > 22 {
 			name = name[:22]
@@ -258,7 +299,7 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 				origPrice = it.UnitPrice
 			}
 			detail := fmt.Sprintf("  %d x %s  -%s%%", it.Quantity, origPrice, it.DiscountPercent)
-			detail += spaces(48 - len(detail) - len(it.UnitPrice))
+			detail += spaces(lineWidth - len(detail) - len(it.UnitPrice))
 			detail += it.UnitPrice
 			if err := sendLine(detail + nl); err != nil {
 				return err
@@ -266,10 +307,92 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 		}
 	}
 
-	if err := sendLine(strings.Repeat("-", 48)+nl); err != nil {
+	if err := sendLine(strings.Repeat("-", lineWidth) + nl); err != nil {
 		return err
 	}
 
+	if !priceless {
+		if err := p.writeTotals(sendLine, sendRaw, r); err != nil {
+			return err
+		}
+	}
+	if err := sendLine(nl); err != nil {
+		return err
+	}
+
+	if err := sendRaw([]byte{0x1b, 'a', 1}); err != nil {
+		return err
+	}
+	if len(r.Payments) > 0 && !priceless {
+		payLine := "PAIEMENT: " + strings.Join(r.Payments, ", ")
+		if err := sendLine(payLine + nl + nl); err != nil {
+			return err
+		}
+	}
+	if err := sendLine("Merci de votre visite!" + nl); err != nil {
+		return err
+	}
+
+	storeSocial := getEnvOrDefault("STORE_SOCIAL_HANDLE", r.StoreSocial)
+	storeWebsite := getEnvOrDefault("STORE_WEBSITE", r.StoreWebsite)
+	if storeSocial != "" {
+		if err := sendLine(storeSocial + nl); err != nil {
+			return err
+		}
+	}
+	if storeWebsite != "" {
+		if err := sendLine(storeWebsite + nl + nl); err != nil {
+			return err
+		}
+	}
+
+	// Sale barcode: scanned at the till to open the sale in the return flow (#874).
+	if r.Barcode != "" {
+		sleep(100 * time.Millisecond) // Extra delay before barcode
+		if err := writeSaleBarcode(w, r.Barcode, r.BarcodeSymbology, printableDots()); err != nil {
+			return err
+		}
+		sleep(200 * time.Millisecond) // Wait for barcode to print
+	}
+	if err := sendLine(nl + nl + nl); err != nil {
+		return err
+	}
+
+	if err := sendRaw([]byte{0x1d, 'V', 1}); err != nil {
+		_ = sendRaw([]byte{0x1d, 'V', 0x41})
+	}
+
+	return nil
+}
+
+// lineWidth is the number of font A characters per line on 80 mm paper.
+const lineWidth = 48
+
+// title is printed in bold at the top of gift and return receipts.
+func (r Receipt) title() string {
+	switch {
+	case r.IsGiftReceipt:
+		return "TICKET CADEAU"
+	case r.IsReturnReceipt:
+		return "TICKET DE RETOUR"
+	default:
+		return ""
+	}
+}
+
+// pricelessItemLine prints the item name (up to 43 characters) and the quantity, never a price.
+func pricelessItemLine(it ReceiptItem) string {
+	name := it.Name
+	if len(name) > lineWidth-5 {
+		name = name[:lineWidth-5]
+	}
+	qty := fmt.Sprintf("%3d", it.Quantity)
+	return name + spaces(lineWidth-len(name)-len(qty)) + qty
+}
+
+// writeTotals prints the optional subtotal and discount, then the total (priced receipts only).
+func (p *Printer) writeTotals(sendLine func(string) error, sendRaw func([]byte) error, r Receipt) error {
+	nl := "\n"
 	if err := sendRaw([]byte{0x1b, 'a', 2}); err != nil {
 		return err
 	}
@@ -281,13 +404,13 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 			subtotal = computeTotal(r.Items)
 		}
 		subLine := "Sous-total"
-		subLine += spaces(48 - len(subLine) - len(subtotal))
+		subLine += spaces(lineWidth - len(subLine) - len(subtotal))
 		subLine += subtotal
 		if err := sendLine(subLine + nl); err != nil {
 			return err
 		}
 		discLine := r.DiscountLabel
-		discLine += spaces(48 - len(discLine) - len(r.DiscountAmount))
+		discLine += spaces(lineWidth - len(discLine) - len(r.DiscountAmount))
 		discLine += r.DiscountAmount
 		if err := sendLine(discLine + nl); err != nil {
 			return err
@@ -304,71 +427,7 @@ func (p *Printer) PrintReceipt(r Receipt) error {
 	if err := sendLine(fmt.Sprintf("TOTAL:      %s EUR%s", total, nl)); err != nil {
 		return err
 	}
-	if err := sendRaw([]byte{0x1b, 'E', 0}); err != nil {
-		return err
-	}
-	if err := sendLine(nl); err != nil {
-		return err
-	}
-
-	if err := sendRaw([]byte{0x1b, 'a', 1}); err != nil {
-		return err
-	}
-	if len(r.Payments) > 0 {
-		payLine := "PAIEMENT: " + strings.Join(r.Payments, ", ")
-		if err := sendLine(payLine+nl+nl); err != nil {
-			return err
-		}
-	}
-	if err := sendLine("Merci de votre visite!"+nl); err != nil {
-		return err
-	}
-
-	storeSocial := getEnvOrDefault("STORE_SOCIAL_HANDLE", r.StoreSocial)
-	storeWebsite := getEnvOrDefault("STORE_WEBSITE", r.StoreWebsite)
-	if storeSocial != "" {
-		if err := sendLine(storeSocial+nl); err != nil {
-			return err
-		}
-	}
-	if storeWebsite != "" {
-		if err := sendLine(storeWebsite+nl+nl); err != nil {
-			return err
-		}
-	}
-
-	// Print barcode if present
-	if r.Barcode != "" {
-		time.Sleep(100 * time.Millisecond) // Extra delay before barcode
-		if err := sendRaw([]byte{0x1d, 'h', 100}); err != nil { // height
-			return err
-		}
-		if err := sendRaw([]byte{0x1d, 'w', 3}); err != nil { // width
-			return err
-		}
-		if err := sendRaw([]byte{0x1d, 'H', 2}); err != nil { // HRI below
-			return err
-		}
-		if err := sendRaw([]byte{0x1d, 'k', 4}); err != nil { // CODE128 type A
-			return err
-		}
-		if err := sendRaw([]byte(r.Barcode)); err != nil {
-			return err
-		}
-		if err := sendRaw([]byte{0x00}); err != nil { // null terminator
-			return err
-		}
-		time.Sleep(200 * time.Millisecond) // Wait for barcode to print
-	}
-	if err := sendLine(nl+nl+nl); err != nil {
-		return err
-	}
-
-	if err := sendRaw([]byte{0x1d, 'V', 1}); err != nil {
-		_ = sendRaw([]byte{0x1d, 'V', 0x41})
-	}
-
-	return nil
+	return sendRaw([]byte{0x1b, 'E', 0})
 }
 
 // PrintPutAsideTicket prints a "mise de cote" ticket for reserved products.
@@ -630,7 +689,7 @@ func removeAccents(s string) string {
 	return replacer.Replace(s)
 }
 
-func printImageGraphicsMode(f *os.File, path string) error {
+func printImageGraphicsMode(f io.Writer, path string) error {
 	imgFile, err := os.Open(path)
 	if err != nil {
 		return err

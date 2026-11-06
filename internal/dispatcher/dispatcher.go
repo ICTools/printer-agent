@@ -208,6 +208,10 @@ func (d *Dispatcher) dispatchReceipt(job api.Job, printer *registry.PrinterInfo)
 		Total:          payload.Total,
 		DiscountLabel:  payload.DiscountLabel,
 		DiscountAmount: payload.DiscountAmount,
+		// chapitreneuf #874: CODE128 sale barcode, gift/return slips without prices.
+		BarcodeSymbology: payload.BarcodeSymbology,
+		IsGiftReceipt:    payload.IsGiftReceipt,
+		IsReturnReceipt:  payload.IsReturnReceipt,
 	}
 
 	p := receipt.NewPrinter(printer.DevicePath)
